@@ -156,6 +156,15 @@ export default class PostgresConnection {
       }
 
       if (!this.hasStarted) {
+        // If this is an SSLRequest, respond with 'N' to indicate it's not supported
+        if (this.isSslRequest(data)) {
+          this.writer.addString('N');
+          const result = this.writer.flush();
+          this.sendData(result);
+          return;
+        }
+
+        // Otherwise this is a StartupMessage
         const { majorVersion, minorVersion, parameters } =
           this.readStartupMessage();
 
@@ -264,7 +273,7 @@ export default class PostgresConnection {
           return;
         }
         case FrontendMessageCode.Query: {
-          const query = this.reader.cstring();
+          const { query } = this.readQuery();
 
           console.log(`Query: ${query}`);
 
@@ -276,6 +285,13 @@ export default class PostgresConnection {
             message: 'Queries not yet implemented',
           });
           this.sendReadyForQuery('idle');
+          return;
+        }
+        // @see https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-TERMINATION
+        case FrontendMessageCode.Terminate: {
+          console.log('Client sent termination message');
+          const { query } = this.readQuery();
+          this.socket.end();
           return;
         }
       }
@@ -295,6 +311,13 @@ export default class PostgresConnection {
     }
 
     this.sendReadyForQuery('idle');
+  }
+
+  isSslRequest(data: Buffer) {
+    const firstBytes = data.readInt16BE(4);
+    const secondBytes = data.readInt16BE(6);
+
+    return firstBytes === 1234 && secondBytes === 5679;
   }
 
   /**
@@ -317,6 +340,19 @@ export default class PostgresConnection {
       majorVersion,
       minorVersion,
       parameters,
+    };
+  }
+
+  /**
+   * Parses a query message from the frontend.
+   *
+   * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-QUERY
+   */
+  readQuery() {
+    const query = this.reader.cstring();
+
+    return {
+      query,
     };
   }
 
