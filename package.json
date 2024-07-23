@@ -5,10 +5,15 @@
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "dev": "tsx test/pglite/index.ts",
+    "clean": "rm -rf dist",
     "build": "tsc -b",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prepublishOnly": "npm run clean && npm run build"
   },
   "dependencies": {
     "@electric-sql/pglite": "npm:@gregnr/pglite@0.2.0-dev.8",
