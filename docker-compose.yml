@@ -1,0 +1,8 @@
+# For testing
+services:
+  database:
+    image: postgres:16
+    ports:
+      - 54321:5432
+    environment:
+      POSTGRES_PASSWORD: postgres
