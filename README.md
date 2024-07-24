@@ -15,7 +15,7 @@ This acts as a layer in front of your Postgres database (or any other database).
 
 - **Authentication:** Supports multiple auth modes - currently `cleartextPassword`, `md5Password`, and `certificate` (more planned)
 - **TLS Encryption:** Handles standard TLS (SSL) upgrades
-- **Modular:** You control the TCP server, we manage the inbound socket
+- **Modular:** You control the server while the library manages the protocol
 - **Hooks:** Hook into various points in the protocol's lifecycle (auth, query, etc)
 - **Escape hatch:** Access the raw protocol messages at any point in the lifecycle
 - **Examples:** Various examples on how you might use this library
@@ -26,7 +26,7 @@ _This library is in active development, so APIs are still WIP. It is pre-1.0 so 
 
 This library is designed to give you as much control as possible while still managing the protocol lifecycle.
 
-Start by creating your own TCP server (ie. via `node:net`), then pass the socket into a ` new PostgresConnection()`:
+Start by creating your own TCP server (ie. via `node:net`), then pass the socket into a `PostgresConnection`:
 
 ```typescript
 import { createServer } from 'node:net';
@@ -44,7 +44,7 @@ server.listen(5432, () => {
 });
 ```
 
-`PostgresConnection` exposes a number of options and hooks as it's second argument:
+`PostgresConnection` exposes a number of options and hooks as its second argument:
 
 ### `serverVersion`
 
@@ -73,7 +73,7 @@ const connection = new PostgresConnection(socket, {
 
 ### `tls`
 
-Like the real Postgres server, TLS connections are established as an upgrade mechanism after the initial connection (via `SSLRequest` message from the client).
+Like the real Postgres server, TLS connections are established as an upgrade mechanism after the initial handshake (`SSLRequest` message from the client).
 
 The `tls` option is an object that contains the following:
 
