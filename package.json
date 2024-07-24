@@ -1,6 +1,6 @@
 {
   "name": "pg-gateway",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Postgres wire protocol for the server-side",
   "license": "MIT",
   "main": "dist/index.js",
