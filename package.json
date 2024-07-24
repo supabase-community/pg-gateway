@@ -9,7 +9,7 @@
     "dist"
   ],
   "scripts": {
-    "dev": "tsx test/pglite/index.ts",
+    "dev": "tsx examples/pglite/index.ts",
     "clean": "rm -rf dist",
     "build": "tsc -b",
     "test": "echo \"Error: no test specified\" && exit 1",

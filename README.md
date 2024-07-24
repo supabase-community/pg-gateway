@@ -8,13 +8,13 @@ This acts as a layer in front of your Postgres database (or any other database).
 
 - Serving [PGlite](#pglite) over TCP
 - Serving a non-Postgres database via the Postgres wire protocol
-- Adding a reverse proxy in front of your databases
+- Adding a [reverse proxy](#reverse-proxy-using-sni) in front of your databases
 - Creating a custom connection pooler
 
 ## Features
 
 - **Authentication:** Supports multiple auth modes - currently `cleartextPassword`, `md5Password`, and `certificate` (more planned)
-- **TLS Encryption:** Handles standard TLS (SSL) upgrades
+- **TLS Encryption:** Handles standard TLS (SSL) upgrades with SNI support (useful for reverse proxying)
 - **Modular:** You control the server while the library manages the protocol
 - **Hooks:** Hook into various points in the protocol's lifecycle (auth, query, etc)
 - **Escape hatch:** Access the raw protocol messages at any point in the lifecycle
@@ -98,23 +98,74 @@ const connection = new PostgresConnection(socket, {
 });
 ```
 
+### `onTlsUpgrade()`
+
+This hook is called after the TLS upgrade has completed. It passes a [`state`](#state) argument which holds connection information gathered so far like `tlsInfo`. The callback can be either synchronous or asynchronous.
+
+This will be called before the startup message is received from the frontend (if TLS is being used) so is a good place to establish [proxy connections](#reverse-proxy-using-sni) if desired.
+
+```typescript
+const tls: TlsOptions = {
+  key: readFileSync('server-key.pem'),
+  cert: readFileSync('server-cert.pem'),
+  ca: readFileSync('ca-cert.pem'),
+};
+
+const connection = new PostgresConnection(socket, {
+  tls,
+  async onTlsUpgrade({ tlsInfo }) {
+    console.log({ tlsInfo });
+  },
+});
+```
+
+### `onStartup()`
+
+This hook is called after the initial startup message has been received from the frontend. It passes a [`state`](#state) argument which holds connection information gathered so far like `clientInfo`. The callback can be either synchronous or asynchronous.
+
+This is called after the connection is upgraded to TLS (if TLS is being used) but before authentication messages are sent to the frontend.
+
+The callback should return `true` to indicate that it has responded to the startup message and no further processing should occur. Return `false` to continue built-in processing.
+
+```typescript
+const connection = new PostgresConnection(socket, {
+  async onStartup({ clientInfo }) {
+    console.log({ clientInfo });
+  },
+});
+```
+
+### `onAuthenticated()`
+
+This hook is called after a successful authentication has completed. It passes a [`state`](#state) argument which holds connection information gathered so far. The callback can be either synchronous or asynchronous.
+
+```typescript
+const connection = new PostgresConnection(socket, {
+  async onAuthenticated(state) {
+    console.log(state);
+  },
+});
+```
+
 ### `validateCredentials()`
 
-This hook allows you to authenticate credentials based on the [auth mode](#authmode). Returning `true` indicates that the credentials are valid and `false` indicates that they are invalid. If the credentials are marked invalid, the server will close the connection with an error. The function can be both synchronous or asynchronous.
+This hook allows you to authenticate credentials based on the [auth mode](#authmode). Returning `true` indicates that the credentials are valid and `false` indicates that they are invalid. If the credentials are marked invalid, the server will close the connection with an error. The callback can be either synchronous or asynchronous.
 
-The `credentials` object passed to the function will contain different properties based on the auth mode:
+1. The first argument contains a `credentials` object passed to the function will contain different properties based on the auth mode:
 
-- `cleartextPassword`:
+   - `cleartextPassword`:
 
-  - `authMode`: `'cleartextPassword'`;
-  - `user`: `string`;
-  - `password`: `string`;
+     - `authMode`: `'cleartextPassword'`;
+     - `user`: `string`;
+     - `password`: `string`;
 
-- `md5Password`:
-  - `authMode`: `'md5Password'`;
-  - `user`: `string`;
-  - `hash`: `string`;
-  - `salt`: `Uint8Array`;
+   - `md5Password`:
+     - `authMode`: `'md5Password'`;
+     - `user`: `string`;
+     - `hash`: `string`;
+     - `salt`: `Uint8Array`;
+
+2. The second argument contains a [`state`](#state) object which holds connection information gathered so far and can be used to understand where the protocol is at in its lifecycle.
 
 You can use TypeScript's [discriminated unions](https://www.typescriptlang.org/docs/handbook/2/narrowing.html#discriminated-unions) to narrow the type of `credentials` before accessing its properties:
 
@@ -140,11 +191,9 @@ const connection = new PostgresConnection(socket, {
 This hook gives you access to raw messages at any point in the protocol lifecycle.
 
 1. The first argument contains the raw `Buffer` data in the message
-2. The second argument contains a `state` object that you can use to identify where the protocol is at in its lifecycle. The object includes:
-   - `hasStarted`: Whether or not a `StartupMessage` has been sent by the client. This is the initial starting point in the protocol.
-   - `isAuthenticated`: Whether or not authentication has completed
+2. The second argument contains a [`state`](#state) object which holds connection information gathered so far and can be used to understand where the protocol is at in its lifecycle.
 
-The callback should return `true` to indicate that you have handled the message response yourself and that no further processing should be done. Returning `false` will result in further processing by the `PostgresConnection`.
+The callback should return `true` to indicate that you have handled the message response yourself and that no further processing should be done. Returning `false` will result in further processing by the `PostgresConnection`. The callback can be either synchronous or asynchronous.
 
 ```typescript
 const connection = new PostgresConnection(socket, {
@@ -157,6 +206,37 @@ const connection = new PostgresConnection(socket, {
 ```
 
 See [PGlite](#pglite) for an example on how you might use this.
+
+### State
+
+Over the course of the protocol lifecycle, `pg-gateway` will hold a `state` object that consists of various connection information gathered. Below are the properties available in `state`:
+
+- `hasStarted`: boolean indicating whether or not a startup message has been received by the client
+- `isAuthenticated`: boolean indicating whether or not a successful authentication handshake has completed with the client
+- `clientInfo`: object containing client information sent during startup.
+
+  - `majorVersion`: `number`;
+  - `minorVersion`: `number`;
+  - `parameters`:
+    - `user`: the user to connect to the database with
+    - Any other arbitrary key-value pair (often `database` and run-time parameters). See [`StartupMessage`](https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-STARTUPMESSAGE) for more info.
+
+  Note that `clientInfo` will be `undefined` until a startup message is received.
+
+- `tlsInfo`: object containing TLS connection information (if TLS is being used).
+
+  - `sniServerName`: string containing the [SNI](#reverse-proxy-using-sni) server name sent by the client. This can be `undefined` if the SNI extension was not used by the client.
+
+  Note that `tlsInfo` will be `undefined` until a TLS upgrade has completed.
+
+State is available directly on the `PostgresConnection` instance:
+
+```typescript
+const connection = new PostgresConnection(socket);
+console.log(connection.state);
+```
+
+It is also passed as an argument to most hooks for convenience.
 
 ## Examples
 
@@ -200,6 +280,7 @@ const server = net.createServer((socket) => {
         connection.sendData(responseData);
       } catch (err) {
         connection.sendError(err);
+        connection.sendReadyForQuery();
       }
       return true;
     },
@@ -213,6 +294,188 @@ const server = net.createServer((socket) => {
 server.listen(5432, () => {
   console.log('Server listening on port 5432');
 });
+```
+
+### Reverse Proxy using SNI
+
+The [server name indication (SNI)](https://en.wikipedia.org/wiki/Server_Name_Indication) TLS extension allows clients to indicate which server hostname they intend to connect to when establishing an encrypted TLS connection with the server. This is commonly used by HTTPS reverse proxies - without it, reverse proxies would be unable to identify which server to forward requests to since all messages are encrypted. You would need a separate IP/port pair for every server name you wish to connect to.
+
+`pg-gateway` supports SNI with Postgres TLS connections to give you the same benefit. You can hook into the TLS upgrade step to retrieve the SNI server name sent by the client and use it to establish a reverse proxy connection to other Postgres servers, all over a single gateway IP/port.
+
+In this example, clients will connect to `<id>.db.example.com` where `id` represents an arbitrary server ID we can use to look up the downstream Postgres host/port info. This implementation will terminate the TLS connection at the gateway, meaning the encrypted connections ends at the gateway and downstream data is proxied unencrypted.
+
+We'll assume that the TLS cert used by the server has a wildcard for `*.db.example.com`, though if you wanted to send separate certs for each server, that is also supported (see below).
+
+_index.ts_
+
+```typescript
+import { readFile } from 'node:fs/promises';
+import net, { connect, Socket } from 'node:net';
+import { PostgresConnection, TlsOptionsCallback } from 'pg-gateway';
+
+const tls: TlsOptionsCallback = async ({ sniServerName }) => {
+  // Optionally serve different certs based on `sniServerName`
+  // In this example we'll use a single wildcard cert for all servers (ie. *.db.example.com)
+  return {
+    key: await readFile('server-key.pem'),
+    cert: await readFile('server-cert.pem'),
+    ca: await readFile('ca-cert.pem'),
+  };
+};
+
+// Looks up the host/port based on the ID
+async function getServerById(id: string) {
+  // In this example we'll hardcode to localhost port 54321
+  return {
+    host: 'localhost',
+    port: 54321,
+  };
+}
+
+const server = net.createServer((socket) => {
+  let proxySocket: Socket;
+
+  const connection = new PostgresConnection(socket, {
+    tls,
+    // This hook occurs before startup messages are received from the client,
+    // so is a good place to establish proxy connections
+    async onTlsUpgrade({ tlsInfo }) {
+      if (!tlsInfo) {
+        connection.sendError({
+          severity: 'FATAL',
+          code: '08000',
+          message: `ssl connection required`,
+        });
+        socket.end();
+        return;
+      }
+
+      if (!tlsInfo.sniServerName) {
+        connection.sendError({
+          severity: 'FATAL',
+          code: '08000',
+          message: `ssl sni extension required`,
+        });
+        socket.end();
+        return;
+      }
+
+      // In this example the left-most subdomain contains the server ID
+      // ie. 12345.db.example.com -> 12345
+      const [serverId] = tlsInfo.sniServerName.split('.');
+
+      // Lookup the server host/port based on ID
+      const serverInfo = await getServerById(serverId);
+
+      // Establish a TCP connection to the downstream server using the above host/port
+      proxySocket = connect(serverInfo);
+
+      // Forward all data received from the downstream server back to the client
+      proxySocket.on('data', (data) => {
+        connection.sendData(data);
+      });
+
+      // If the proxy socket ends, end the client socket
+      proxySocket.on('end', () => {
+        socket.end();
+      });
+    },
+    async onMessage(data, { tlsInfo }) {
+      // Only forward messages after the connection has been upgraded to TLS
+      if (!tlsInfo) {
+        return false;
+      }
+
+      if (!proxySocket) {
+        connection.sendError({
+          severity: 'FATAL',
+          code: 'XX000',
+          message: `internal error connecting to proxy socket`,
+        });
+        socket.end();
+        return true;
+      }
+
+      // Forward all messages from the client to the downstream server
+      proxySocket.write(data);
+      return true;
+    },
+  });
+
+  socket.on('end', () => {
+    console.log('Client disconnected');
+  });
+});
+
+server.listen(5432, () => {
+  console.log('Server listening on port 5432');
+});
+```
+
+To test this, we can create a self-signed certificate authority (CA) and cert. In production you could use a well known CA like Let's Encrypt.
+
+Generate the certificates using OpenSSL:
+
+1. **Generate the CA key and certificate:**
+
+   ```bash
+   openssl genpkey -algorithm RSA -out ca-key.pem
+   openssl req -new -x509 -key ca-key.pem -out ca-cert.pem -days 365 -subj "/CN=MyCA"
+   ```
+
+2. **Generate the server key and CSR (Certificate Signing Request):**
+
+   ```bash
+   openssl genpkey -algorithm RSA -out server-key.pem
+   openssl req -new -key server-key.pem -out server-csr.pem -subj "/CN=*.db.example.com"
+   ```
+
+3. **Sign the server certificate with the CA certificate:**
+   ```bash
+   openssl x509 -req -in server-csr.pem -CA ca-cert.pem -CAkey ca-key.pem -CAcreateserial -out server-cert.pem -days 365
+   ```
+
+Next we'll spin up a real Postgres server on `localhost` port `54321` using Docker:
+
+```shell
+docker run --rm -p 54321:5432 -e POSTGRES_PASSWORD=postgres postgres:16
+```
+
+This will act as our downstream server.
+
+Next start the `pg-gateway` server:
+
+```shell
+npx tsx index.ts
+```
+
+Finally test the connection using `psql`:
+
+```shell
+psql "host=localhost port=5432 user=postgres sslmode=required"
+```
+
+You should be prompted for a password (`postgres`) and then brought into the `psql` REPL. At this point you are communicating with the downstream server through the reverse proxy. You can verify that you are connected to the downstream server by looking at the server version printed by `psql`:
+
+```
+psql (16.2, server 16.3 (Debian 16.3-1.pgdg120+1))
+...
+```
+
+Note that we used `localhost` as the host which resulted in `sniServerName` being `localhost` instead of `12345.db.example.com`. To properly test this, you will need to pass the real host name:
+
+```shell
+psql "host=12345.db.example.com port=5432 user=postgres sslmode=required"
+```
+
+If you wanted to test this without deploying `pg-gateway` to a real server, you could modify your `/etc/hosts` file to point `12345.db.example.com` to your machine's loopback interface (acting like `localhost`):
+
+_/etc/hosts_
+
+```
+# ...
+
+127.0.0.1 12345.db.example.com
 ```
 
 ## Development

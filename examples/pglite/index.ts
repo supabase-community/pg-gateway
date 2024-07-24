@@ -1,10 +1,8 @@
 import { PGlite } from '@electric-sql/pglite';
-import { Mutex, withTimeout } from 'async-mutex';
 import net from 'node:net';
 import { PostgresConnection, hashMd5Password } from '../../src';
 
 const db = new PGlite();
-const mutex = withTimeout(new Mutex(), 5000);
 
 const server = net.createServer((socket) => {
   const connection = new PostgresConnection(socket, {
@@ -28,19 +26,13 @@ const server = net.createServer((socket) => {
         return false;
       }
 
+      // Forward raw message to PGlite
       try {
-        // All sockets share the same PGlite connection (runs in single-user mode),
-        // so we need a mutex to queue requests
-        await mutex.runExclusive(async () => {
-          // Forward raw message to PGlite
-          const responseData = await db.execProtocolRaw(data);
-          connection.sendData(responseData);
-        });
+        const [[_, responseData]] = await db.execProtocol(data);
+        connection.sendData(responseData);
       } catch (err) {
-        console.warn('Mutex timeout');
-
-        // TODO: something more graceful than closing the connection
-        socket.end();
+        connection.sendError(err);
+        connection.sendReadyForQuery();
       }
       return true;
     },

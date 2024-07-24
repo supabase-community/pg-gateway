@@ -1,5 +1,5 @@
 import { Socket } from 'node:net';
-import { TLSSocket, TLSSocketOptions } from 'node:tls';
+import { createSecureContext, TLSSocket, TLSSocketOptions } from 'node:tls';
 import { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import { Writer } from 'pg-protocol/dist/buffer-writer';
 import { generateMd5Salt } from './util.js';
@@ -92,6 +92,10 @@ export type TlsOptions = {
   passphrase?: string;
 };
 
+export type TlsOptionsCallback = (
+  tlsInfo: TlsInfo
+) => TlsOptions | Promise<TlsOptions>;
+
 export type PostgresConnectionOptions = {
   /**
    * The server version to send to the frontend.
@@ -106,30 +110,64 @@ export type PostgresConnectionOptions = {
   /**
    * TLS options for when clients send an SSLRequest.
    */
-  tls?: TlsOptions;
+  tls?: TlsOptions | TlsOptionsCallback;
 
   /**
-   * Validates `user` and `password` for connecting clients.
+   * Validates authentication credentials based on the auth mode set.
+   *
+   * Includes `state` which holds connection information gathered so far.
+   *
    * Callback should return `true` if credentials are valid and
    * `false` if credentials are invalid.
    */
-  validateCredentials?(credentials: Credentials): boolean | Promise<boolean>;
+  validateCredentials?(
+    credentials: Credentials,
+    state: State
+  ): boolean | Promise<boolean>;
 
   /**
-   * Callback for every frontend message sent after startup.
+   * Callback after the connection has been upgraded to TLS.
+   *
+   * Includes `state` which holds connection information gathered so far like `tlsInfo`.
+   *
+   * This will be called before the startup message is received from the frontend
+   * (if TLS is being used) so is a good place to establish proxy connections if desired.
+   */
+  onTlsUpgrade?(state: State): void | Promise<void>;
+
+  /**
+   * Callback after the initial startup message has been received from the frontend.
+   *
+   * Includes `state` which holds connection information gathered so far like `clientInfo`.
+   *
+   * This is called after the connection is upgraded to TLS (if TLS is being used)
+   * but before authentication messages are sent to the frontend.
+   *
+   * Callback should return `true` to indicate that it has responded to the startup
+   * message and no further processing should occur. Return `false` to continue
+   * built-in processing.
+   */
+  onStartup?(state: State): boolean | Promise<boolean>;
+
+  /**
+   * Callback after a successful authentication has completed.
+   *
+   * Includes `state` which holds connection information gathered so far.
+   */
+  onAuthenticated?(state: State): void | Promise<void>;
+
+  /**
+   * Callback for every message received from the frontend.
    * Use this as an escape hatch to manually handle raw message data.
    *
-   * Callback should return `true` to indicate that it has handled the message
+   * Includes `state` which holds connection information gathered so far and
+   * can be used to understand where the protocol is at in its lifecycle.
+   *
+   * Callback should return `true` to indicate that it has responded to the message
    * and no further processing should occur. Return `false` to continue
    * built-in processing.
    */
-  onMessage?(
-    data: Uint8Array,
-    state: {
-      hasStarted: boolean;
-      isAuthenticated: boolean;
-    }
-  ): boolean | Promise<boolean>;
+  onMessage?(data: Uint8Array, state: State): boolean | Promise<boolean>;
 
   /**
    * Callback for every frontend query message.
@@ -141,7 +179,29 @@ export type PostgresConnectionOptions = {
    * TODO: change return signature to be more developer-friendly
    * and then translate to wire protocol.
    */
-  onQuery?(query: string): Uint8Array | Promise<Uint8Array>;
+  onQuery?(query: string, state: State): Uint8Array | Promise<Uint8Array>;
+};
+
+export type ClientParameters = {
+  user: string;
+  [key: string]: string;
+};
+
+export type ClientInfo = {
+  majorVersion: number;
+  minorVersion: number;
+  parameters: ClientParameters;
+};
+
+export type TlsInfo = {
+  sniServerName?: string;
+};
+
+export type State = {
+  hasStarted: boolean;
+  isAuthenticated: boolean;
+  clientInfo?: ClientInfo;
+  tlsInfo?: TlsInfo;
 };
 
 export default class PostgresConnection {
@@ -150,18 +210,28 @@ export default class PostgresConnection {
   isAuthenticated = false;
   writer = new Writer();
   reader = new BufferReader();
-  user?: string;
   md5Salt = generateMd5Salt();
+  clientInfo?: ClientInfo;
+  tlsInfo?: TlsInfo;
 
   constructor(
     public socket: Socket,
     public options: PostgresConnectionOptions = {}
   ) {
     if (!options.authMode) {
-      options.authMode = 'cleartextPassword';
+      options.authMode = 'md5Password';
     }
 
     this.createSocketHandlers(socket);
+  }
+
+  get state(): State {
+    return {
+      hasStarted: this.hasStarted,
+      isAuthenticated: this.isAuthenticated,
+      clientInfo: this.clientInfo,
+      tlsInfo: this.tlsInfo,
+    };
   }
 
   createSocketHandlers(socket: Socket) {
@@ -172,10 +242,7 @@ export default class PostgresConnection {
     this.reader.setBuffer(0, data);
 
     // If the `onMessage()` hook returns `true`, it managed this response so skip further processing
-    const skip = await this.options.onMessage?.(data, {
-      hasStarted: this.hasStarted,
-      isAuthenticated: this.isAuthenticated,
-    });
+    const skip = await this.options.onMessage?.(data, this.state);
 
     if (skip) {
       return;
@@ -197,32 +264,14 @@ export default class PostgresConnection {
         this.sendData(result);
 
         // From now on the frontend will communicate via TLS, so upgrade the connection
-        const { key, cert, ca, passphrase } = this.options.tls;
-        const tlsOptions: TLSSocketOptions = {
-          key,
-          cert,
-          ca,
-          passphrase,
-        };
-
-        // If auth mode is 'certificate' we also need to request a client cert
-        if (this.options.authMode === 'certificate') {
-          tlsOptions.requestCert = true;
-        }
-
-        this.upgradeToTls(tlsOptions);
+        await this.upgradeToTls(this.options.tls);
+        await this.options.onTlsUpgrade?.(this.state);
         return;
       }
 
       // Otherwise this is a StartupMessage
       const { majorVersion, minorVersion, parameters } =
         this.readStartupMessage();
-
-      console.log('Client connection', {
-        majorVersion,
-        minorVersion,
-        parameters,
-      });
 
       // user is required
       if (!parameters.user) {
@@ -235,8 +284,6 @@ export default class PostgresConnection {
         return;
       }
 
-      this.user = parameters.user;
-
       if (majorVersion !== 3 || minorVersion !== 0) {
         this.sendError({
           severity: 'FATAL',
@@ -247,10 +294,26 @@ export default class PostgresConnection {
         return;
       }
 
+      this.clientInfo = {
+        majorVersion,
+        minorVersion,
+        parameters: {
+          user: parameters.user,
+          ...parameters,
+        },
+      };
+
+      this.hasStarted = true;
+      const skip = await this.options.onStartup?.(this.state);
+
+      if (skip) {
+        return;
+      }
+
       // Handle authentication modes
       switch (this.options.authMode) {
         case 'none': {
-          this.completeAuthentication();
+          await this.completeAuthentication();
           break;
         }
         case 'cleartextPassword': {
@@ -266,7 +329,7 @@ export default class PostgresConnection {
             this.sendError({
               severity: 'FATAL',
               code: '08000',
-              message: `ssl connection required`,
+              message: `ssl connection required when auth mode is 'certificate'`,
             });
             this.socket.end();
             return;
@@ -286,31 +349,30 @@ export default class PostgresConnection {
           const cert = this.secureSocket.getPeerCertificate();
           const clientCN = cert.subject.CN;
 
-          if (clientCN !== this.user) {
+          if (clientCN !== this.clientInfo.parameters.user) {
             this.sendError({
               severity: 'FATAL',
               code: '08000',
-              message: `client certificate CN '${clientCN}' does not match user '${this.user}'`,
+              message: `client certificate CN '${clientCN}' does not match user '${this.clientInfo.parameters.user}'`,
             });
             this.socket.end();
             return;
           }
 
-          this.completeAuthentication();
+          await this.completeAuthentication();
           break;
         }
       }
 
-      this.hasStarted = true;
       return;
     }
 
-    // Type narrowing for `this.user` - this condition should never happen
-    if (!this.user) {
+    // Type narrowing for `this.clientInfo` - this condition should never happen
+    if (!this.clientInfo) {
       this.sendError({
         severity: 'FATAL',
         code: 'XX000',
-        message: `unknown user after startup`,
+        message: `unknown client info after startup`,
       });
       this.socket.end();
       return;
@@ -326,11 +388,14 @@ export default class PostgresConnection {
         switch (authMode) {
           case 'cleartextPassword': {
             const password = this.reader.cstring();
-            const valid = await this.options.validateCredentials?.({
-              authMode,
-              user: this.user,
-              password,
-            });
+            const valid = await this.options.validateCredentials?.(
+              {
+                authMode,
+                user: this.clientInfo.parameters.user,
+                password,
+              },
+              this.state
+            );
 
             if (!valid) {
               this.sendAuthenticationFailedError();
@@ -338,17 +403,20 @@ export default class PostgresConnection {
               return;
             }
 
-            this.completeAuthentication();
+            await this.completeAuthentication();
             return;
           }
           case 'md5Password': {
             const hash = this.reader.cstring();
-            const valid = await this.options.validateCredentials?.({
-              authMode,
-              user: this.user,
-              hash,
-              salt: this.md5Salt,
-            });
+            const valid = await this.options.validateCredentials?.(
+              {
+                authMode,
+                user: this.clientInfo.parameters.user,
+                hash,
+                salt: this.md5Salt,
+              },
+              this.state
+            );
 
             if (!valid) {
               this.sendAuthenticationFailedError();
@@ -356,7 +424,7 @@ export default class PostgresConnection {
               return;
             }
 
-            this.completeAuthentication();
+            await this.completeAuthentication();
             return;
           }
         }
@@ -391,7 +459,7 @@ export default class PostgresConnection {
    * Completes authentication by forwarding the appropriate messages
    * to the frontend.
    */
-  completeAuthentication() {
+  async completeAuthentication() {
     this.isAuthenticated = true;
     this.sendAuthenticationOk();
 
@@ -400,6 +468,8 @@ export default class PostgresConnection {
     }
 
     this.sendReadyForQuery('idle');
+
+    await this.options.onAuthenticated?.(this.state);
   }
 
   isSslRequest(data: Buffer) {
@@ -409,35 +479,82 @@ export default class PostgresConnection {
     return firstBytes === 1234 && secondBytes === 5679;
   }
 
+  async createTlsSocketOptions(
+    optionsOrCallback: TlsOptions | TlsOptionsCallback,
+    tlsInfo: TlsInfo
+  ) {
+    const { key, cert, ca, passphrase } =
+      typeof optionsOrCallback === 'function'
+        ? await optionsOrCallback(tlsInfo)
+        : optionsOrCallback;
+
+    const tlsOptions: TLSSocketOptions = {
+      key,
+      cert,
+      ca,
+      passphrase,
+    };
+
+    // If auth mode is 'certificate' we also need to request a client cert
+    if (this.options.authMode === 'certificate') {
+      tlsOptions.requestCert = true;
+    }
+
+    return tlsOptions;
+  }
+
   /**
    * Upgrades TCP socket connection to TLS.
    */
-  upgradeToTls(options: TLSSocketOptions) {
-    // Pause the socket to avoid losing any data
-    this.socket.pause();
+  upgradeToTls(options: TlsOptions | TlsOptionsCallback) {
+    return new Promise<void>(async (resolve) => {
+      this.tlsInfo = {};
 
-    // Create a new TLS socket and pipe the existing TCP socket to it
-    this.secureSocket = new TLSSocket(this.socket, {
-      isServer: true,
-      ...options,
+      // Pause the socket to avoid losing any data
+      this.socket.pause();
+
+      const tlsSocketOptions = await this.createTlsSocketOptions(
+        options,
+        this.tlsInfo
+      );
+
+      // Create a new TLS socket and pipe the existing TCP socket to it
+      this.secureSocket = new TLSSocket(this.socket, {
+        ...tlsSocketOptions,
+
+        // This is a server-side TLS socket
+        isServer: true,
+
+        // Record SNI info and re-create TLS options based on it
+        SNICallback: async (sniServerName, callback) => {
+          this.tlsInfo!.sniServerName = sniServerName;
+
+          const tlsSocketOptions = await this.createTlsSocketOptions(
+            options,
+            this.tlsInfo!
+          );
+
+          callback(null, createSecureContext(tlsSocketOptions));
+        },
+      });
+
+      // Since we create a TLSSocket out of band from a typical tls.Server,
+      // we have to manually validate client certs ourselves as done here:
+      // https://github.com/nodejs/node/blob/aeaffbb385c9fc756247e6deaa70be8eb8f59496/lib/_tls_wrap.js#L1248
+      this.secureSocket.on('secure', () => {
+        onServerSocketSecure.bind(this.secureSocket)();
+        resolve();
+      });
+
+      // Re-create event handlers for the secure socket
+      this.createSocketHandlers(this.secureSocket);
+
+      // Resume the socket
+      this.socket.resume();
+
+      // Replace socket with the secure socket
+      this.socket = this.secureSocket;
     });
-
-    // Since we create a TLSSocket out of band from a typical tls.Server,
-    // we have to manually validate client certs ourselves as done here:
-    // https://github.com/nodejs/node/blob/aeaffbb385c9fc756247e6deaa70be8eb8f59496/lib/_tls_wrap.js#L1248
-    this.secureSocket.on(
-      'secure',
-      onServerSocketSecure.bind(this.secureSocket)
-    );
-
-    // Re-create event handlers for the secure socket
-    this.createSocketHandlers(this.secureSocket);
-
-    // Resume the socket
-    this.socket.resume();
-
-    // Replace socket with the secure socket
-    this.socket = this.secureSocket;
   }
 
   /**
@@ -501,7 +618,7 @@ export default class PostgresConnection {
    *
    * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONMD5PASSWORD
    */
-  private sendAuthenticationMD5Password(salt: ArrayBuffer) {
+  sendAuthenticationMD5Password(salt: ArrayBuffer) {
     this.writer.addInt32(5);
     this.writer.add(Buffer.from(salt));
 
@@ -517,7 +634,7 @@ export default class PostgresConnection {
    *
    * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONOK
    */
-  private sendAuthenticationOk() {
+  sendAuthenticationOk() {
     this.writer.addInt32(0);
     const response = this.writer.flush(
       BackendMessageCode.AuthenticationResponse
@@ -532,7 +649,7 @@ export default class PostgresConnection {
    * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-PARAMETERSTATUS
    * @see https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-ASYNC
    */
-  private sendParameterStatus(name: string, value: string) {
+  sendParameterStatus(name: string, value: string) {
     this.writer.addCString(name);
     this.writer.addCString(value);
     const response = this.writer.flush(BackendMessageCode.ParameterStatus);
@@ -544,8 +661,8 @@ export default class PostgresConnection {
    *
    * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-READYFORQUERY
    */
-  private sendReadyForQuery(
-    transactionStatus: 'idle' | 'transaction' | 'error'
+  sendReadyForQuery(
+    transactionStatus: 'idle' | 'transaction' | 'error' = 'idle'
   ) {
     switch (transactionStatus) {
       case 'idle':
@@ -666,7 +783,9 @@ export default class PostgresConnection {
     this.sendError({
       severity: 'FATAL',
       code: '28P01',
-      message: `password authentication failed for user "${this.user}"`,
+      message: this.clientInfo?.parameters.user
+        ? `password authentication failed for user "${this.clientInfo.parameters.user}"`
+        : 'password authentication failed',
     });
   }
 }
