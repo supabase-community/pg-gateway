@@ -1,4 +1,5 @@
 import { Socket } from 'node:net';
+import { TLSSocket, TLSSocketOptions } from 'node:tls';
 import { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import { Writer } from 'pg-protocol/dist/buffer-writer';
 import { generateMd5Salt } from './util.js';
@@ -84,7 +85,14 @@ export type Md5PasswordCredentials = {
 
 export type Credentials = CleartextPasswordCredentials | Md5PasswordCredentials;
 
-export type BackendOptions = {
+export type TlsOptions = {
+  key: Buffer;
+  cert: Buffer;
+  ca?: Buffer;
+  passphrase?: string;
+};
+
+export type PostgresConnectionOptions = {
   /**
    * The server version to send to the frontend.
    */
@@ -93,7 +101,12 @@ export type BackendOptions = {
   /**
    * The authentication mode for the server.
    */
-  authMode?: 'none' | 'cleartextPassword' | 'md5Password';
+  authMode?: 'none' | 'cleartextPassword' | 'md5Password' | 'certificate';
+
+  /**
+   * TLS options for when clients send an SSLRequest.
+   */
+  tls?: TlsOptions;
 
   /**
    * Validates `user` and `password` for connecting clients.
@@ -132,6 +145,7 @@ export type BackendOptions = {
 };
 
 export default class PostgresConnection {
+  secureSocket?: TLSSocket;
   hasStarted = false;
   isAuthenticated = false;
   writer = new Writer();
@@ -139,163 +153,238 @@ export default class PostgresConnection {
   user?: string;
   md5Salt = generateMd5Salt();
 
-  constructor(public socket: Socket, public options: BackendOptions = {}) {
-    const { authMode = 'none' } = options;
+  constructor(
+    public socket: Socket,
+    public options: PostgresConnectionOptions = {}
+  ) {
+    if (!options.authMode) {
+      options.authMode = 'cleartextPassword';
+    }
 
-    socket.on('data', async (data) => {
-      this.reader.setBuffer(0, data);
+    this.createSocketHandlers(socket);
+  }
 
-      // If the `onMessage()` hook returns `true`, it managed this response, so return
-      const skip = await options.onMessage?.(data, {
-        hasStarted: this.hasStarted,
-        isAuthenticated: this.isAuthenticated,
-      });
+  createSocketHandlers(socket: Socket) {
+    socket.on('data', this.handleData.bind(this));
+  }
 
-      if (skip) {
-        return;
-      }
+  async handleData(data: Buffer) {
+    this.reader.setBuffer(0, data);
 
-      if (!this.hasStarted) {
-        // If this is an SSLRequest, respond with 'N' to indicate it's not supported
-        if (this.isSslRequest(data)) {
+    // If the `onMessage()` hook returns `true`, it managed this response so skip further processing
+    const skip = await this.options.onMessage?.(data, {
+      hasStarted: this.hasStarted,
+      isAuthenticated: this.isAuthenticated,
+    });
+
+    if (skip) {
+      return;
+    }
+
+    if (!this.hasStarted) {
+      if (this.isSslRequest(data)) {
+        // If no TLS options are set, respond with 'N' to indicate TLS is not supported
+        if (!this.options.tls) {
           this.writer.addString('N');
           const result = this.writer.flush();
           this.sendData(result);
           return;
         }
 
-        // Otherwise this is a StartupMessage
-        const { majorVersion, minorVersion, parameters } =
-          this.readStartupMessage();
+        // Otherwise respond with 'S' to indicate it is supported
+        this.writer.addString('S');
+        const result = this.writer.flush();
+        this.sendData(result);
 
-        console.log('Client connection', {
-          majorVersion,
-          minorVersion,
-          parameters,
-        });
+        // From now on the frontend will communicate via TLS, so upgrade the connection
+        const { key, cert, ca, passphrase } = this.options.tls;
+        const tlsOptions: TLSSocketOptions = {
+          key,
+          cert,
+          ca,
+          passphrase,
+        };
 
-        // user is required
-        if (!parameters.user) {
-          this.sendError({
-            severity: 'FATAL',
-            code: '08000',
-            message: `user is required`,
-          });
-          this.socket.end();
-          return;
+        // If auth mode is 'certificate' we also need to request a client cert
+        if (this.options.authMode === 'certificate') {
+          tlsOptions.requestCert = true;
         }
 
-        this.user = parameters.user;
-
-        if (majorVersion !== 3 || minorVersion !== 0) {
-          this.sendError({
-            severity: 'FATAL',
-            code: '08000',
-            message: `Unsupported protocol version ${majorVersion.toString()}.${minorVersion.toString()}`,
-          });
-          this.socket.end();
-          return;
-        }
-
-        // Handle authentication modes
-        switch (authMode) {
-          case 'none': {
-            this.completeAuthentication();
-            break;
-          }
-          case 'cleartextPassword': {
-            this.sendAuthenticationCleartextPassword();
-            break;
-          }
-          case 'md5Password': {
-            this.sendAuthenticationMD5Password(this.md5Salt);
-            break;
-          }
-        }
-
-        this.hasStarted = true;
+        this.upgradeToTls(tlsOptions);
         return;
       }
 
-      // Type narrowing for `this.user` - this condition should never happen
-      if (!this.user) {
+      // Otherwise this is a StartupMessage
+      const { majorVersion, minorVersion, parameters } =
+        this.readStartupMessage();
+
+      console.log('Client connection', {
+        majorVersion,
+        minorVersion,
+        parameters,
+      });
+
+      // user is required
+      if (!parameters.user) {
         this.sendError({
           severity: 'FATAL',
-          code: 'XX000',
-          message: `unknown user after startup`,
+          code: '08000',
+          message: `user is required`,
         });
         this.socket.end();
         return;
       }
 
-      const code = this.reader.byte();
-      const length = this.reader.int32();
+      this.user = parameters.user;
 
-      switch (code) {
-        case FrontendMessageCode.Password: {
-          switch (authMode) {
-            case 'cleartextPassword': {
-              const password = this.reader.cstring();
-              const valid = await this.options.validateCredentials?.({
-                authMode,
-                user: this.user,
-                password,
-              });
+      if (majorVersion !== 3 || minorVersion !== 0) {
+        this.sendError({
+          severity: 'FATAL',
+          code: '08000',
+          message: `Unsupported protocol version ${majorVersion.toString()}.${minorVersion.toString()}`,
+        });
+        this.socket.end();
+        return;
+      }
 
-              if (!valid) {
-                this.sendAuthenticationFailedError();
-                this.socket.end();
-                return;
-              }
-
-              this.completeAuthentication();
-              return;
-            }
-            case 'md5Password': {
-              const hash = this.reader.cstring();
-              const valid = await this.options.validateCredentials?.({
-                authMode,
-                user: this.user,
-                hash,
-                salt: this.md5Salt,
-              });
-
-              if (!valid) {
-                this.sendAuthenticationFailedError();
-                this.socket.end();
-                return;
-              }
-
-              this.completeAuthentication();
-              return;
-            }
+      // Handle authentication modes
+      switch (this.options.authMode) {
+        case 'none': {
+          this.completeAuthentication();
+          break;
+        }
+        case 'cleartextPassword': {
+          this.sendAuthenticationCleartextPassword();
+          break;
+        }
+        case 'md5Password': {
+          this.sendAuthenticationMD5Password(this.md5Salt);
+          break;
+        }
+        case 'certificate': {
+          if (!this.secureSocket) {
+            this.sendError({
+              severity: 'FATAL',
+              code: '08000',
+              message: `ssl connection required`,
+            });
+            this.socket.end();
+            return;
           }
-          return;
-        }
-        case FrontendMessageCode.Query: {
-          const { query } = this.readQuery();
 
-          console.log(`Query: ${query}`);
+          if (!this.secureSocket.authorized) {
+            console.log(this.secureSocket.authorizationError);
+            this.sendError({
+              severity: 'FATAL',
+              code: '08000',
+              message: `client certificate is invalid`,
+            });
+            this.socket.end();
+            return;
+          }
 
-          // TODO: call `onQuery` hook to allow consumer to choose how queries are implemented
+          const cert = this.secureSocket.getPeerCertificate();
+          const clientCN = cert.subject.CN;
 
-          this.sendError({
-            severity: 'ERROR',
-            code: '123',
-            message: 'Queries not yet implemented',
-          });
-          this.sendReadyForQuery('idle');
-          return;
-        }
-        // @see https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-TERMINATION
-        case FrontendMessageCode.Terminate: {
-          console.log('Client sent termination message');
-          const { query } = this.readQuery();
-          this.socket.end();
-          return;
+          if (clientCN !== this.user) {
+            this.sendError({
+              severity: 'FATAL',
+              code: '08000',
+              message: `client certificate CN '${clientCN}' does not match user '${this.user}'`,
+            });
+            this.socket.end();
+            return;
+          }
+
+          this.completeAuthentication();
+          break;
         }
       }
-    });
+
+      this.hasStarted = true;
+      return;
+    }
+
+    // Type narrowing for `this.user` - this condition should never happen
+    if (!this.user) {
+      this.sendError({
+        severity: 'FATAL',
+        code: 'XX000',
+        message: `unknown user after startup`,
+      });
+      this.socket.end();
+      return;
+    }
+
+    const { authMode } = this.options;
+
+    const code = this.reader.byte();
+    const length = this.reader.int32();
+
+    switch (code) {
+      case FrontendMessageCode.Password: {
+        switch (authMode) {
+          case 'cleartextPassword': {
+            const password = this.reader.cstring();
+            const valid = await this.options.validateCredentials?.({
+              authMode,
+              user: this.user,
+              password,
+            });
+
+            if (!valid) {
+              this.sendAuthenticationFailedError();
+              this.socket.end();
+              return;
+            }
+
+            this.completeAuthentication();
+            return;
+          }
+          case 'md5Password': {
+            const hash = this.reader.cstring();
+            const valid = await this.options.validateCredentials?.({
+              authMode,
+              user: this.user,
+              hash,
+              salt: this.md5Salt,
+            });
+
+            if (!valid) {
+              this.sendAuthenticationFailedError();
+              this.socket.end();
+              return;
+            }
+
+            this.completeAuthentication();
+            return;
+          }
+        }
+        return;
+      }
+      case FrontendMessageCode.Query: {
+        const { query } = this.readQuery();
+
+        console.log(`Query: ${query}`);
+
+        // TODO: call `onQuery` hook to allow consumer to choose how queries are implemented
+
+        this.sendError({
+          severity: 'ERROR',
+          code: '123',
+          message: 'Queries not yet implemented',
+        });
+        this.sendReadyForQuery('idle');
+        return;
+      }
+      // @see https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-TERMINATION
+      case FrontendMessageCode.Terminate: {
+        console.log('Client sent termination message');
+        const { query } = this.readQuery();
+        this.socket.end();
+        return;
+      }
+    }
   }
 
   /**
@@ -318,6 +407,37 @@ export default class PostgresConnection {
     const secondBytes = data.readInt16BE(6);
 
     return firstBytes === 1234 && secondBytes === 5679;
+  }
+
+  /**
+   * Upgrades TCP socket connection to TLS.
+   */
+  upgradeToTls(options: TLSSocketOptions) {
+    // Pause the socket to avoid losing any data
+    this.socket.pause();
+
+    // Create a new TLS socket and pipe the existing TCP socket to it
+    this.secureSocket = new TLSSocket(this.socket, {
+      isServer: true,
+      ...options,
+    });
+
+    // Since we create a TLSSocket out of band from a typical tls.Server,
+    // we have to manually validate client certs ourselves as done here:
+    // https://github.com/nodejs/node/blob/aeaffbb385c9fc756247e6deaa70be8eb8f59496/lib/_tls_wrap.js#L1248
+    this.secureSocket.on(
+      'secure',
+      onServerSocketSecure.bind(this.secureSocket)
+    );
+
+    // Re-create event handlers for the secure socket
+    this.createSocketHandlers(this.secureSocket);
+
+    // Resume the socket
+    this.socket.resume();
+
+    // Replace socket with the secure socket
+    this.socket = this.secureSocket;
   }
 
   /**
@@ -548,5 +668,22 @@ export default class PostgresConnection {
       code: '28P01',
       message: `password authentication failed for user "${this.user}"`,
     });
+  }
+}
+
+/**
+ * Internal Node.js handler copied and modified from source to validate client certs.
+ * https://github.com/nodejs/node/blob/aeaffbb385c9fc756247e6deaa70be8eb8f59496/lib/_tls_wrap.js#L1185-L1203
+ *
+ * Without this, `authorized` is always `false` on the TLSSocket and we never know if the client cert is valid.
+ */
+function onServerSocketSecure(this: TLSSocket & any) {
+  if (this._requestCert) {
+    const verifyError = this._handle.verifyError();
+    if (verifyError) {
+      this.authorizationError = verifyError.code;
+    } else {
+      this.authorized = true;
+    }
   }
 }
