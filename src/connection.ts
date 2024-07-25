@@ -214,6 +214,8 @@ export default class PostgresConnection {
   clientInfo?: ClientInfo;
   tlsInfo?: TlsInfo;
 
+  private boundDataHandler: (data: Buffer) => Promise<void>;
+
   constructor(
     public socket: Socket,
     public options: PostgresConnectionOptions = {}
@@ -222,6 +224,7 @@ export default class PostgresConnection {
       options.authMode = 'md5Password';
     }
 
+    this.boundDataHandler = this.handleData.bind(this);
     this.createSocketHandlers(socket);
   }
 
@@ -235,7 +238,23 @@ export default class PostgresConnection {
   }
 
   createSocketHandlers(socket: Socket) {
-    socket.on('data', this.handleData.bind(this));
+    socket.on('data', this.boundDataHandler);
+  }
+
+  removeSocketHandlers(socket: Socket) {
+    socket.off('data', this.boundDataHandler);
+  }
+
+  /**
+   * Detaches the `PostgresConnection` from the socket.
+   * After calling this, no more handlers will be called
+   * and data will no longer be buffered.
+   *
+   * @returns The underlying socket (which could have been upgraded to a `TLSSocket`)
+   */
+  detach() {
+    this.removeSocketHandlers(this.socket);
+    return this.socket;
   }
 
   async handleData(data: Buffer) {
@@ -265,7 +284,6 @@ export default class PostgresConnection {
 
         // From now on the frontend will communicate via TLS, so upgrade the connection
         await this.upgradeToTls(this.options.tls);
-        await this.options.onTlsUpgrade?.(this.state);
         return;
       }
 
@@ -506,55 +524,62 @@ export default class PostgresConnection {
   /**
    * Upgrades TCP socket connection to TLS.
    */
-  upgradeToTls(options: TlsOptions | TlsOptionsCallback) {
-    return new Promise<void>(async (resolve) => {
-      this.tlsInfo = {};
+  async upgradeToTls(options: TlsOptions | TlsOptionsCallback) {
+    this.tlsInfo = {};
 
-      // Pause the socket to avoid losing any data
-      this.socket.pause();
+    const originalSocket = this.socket;
 
-      const tlsSocketOptions = await this.createTlsSocketOptions(
-        options,
-        this.tlsInfo
-      );
+    // Pause the socket to avoid losing any data
+    originalSocket.pause();
 
-      // Create a new TLS socket and pipe the existing TCP socket to it
-      this.secureSocket = new TLSSocket(this.socket, {
-        ...tlsSocketOptions,
+    // Remove event handlers on the original socket to avoid reading encrypted data
+    this.removeSocketHandlers(originalSocket);
 
-        // This is a server-side TLS socket
-        isServer: true,
+    const tlsSocketOptions = await this.createTlsSocketOptions(
+      options,
+      this.tlsInfo
+    );
 
-        // Record SNI info and re-create TLS options based on it
-        SNICallback: async (sniServerName, callback) => {
-          this.tlsInfo!.sniServerName = sniServerName;
+    // Create a new TLS socket and pipe the existing TCP socket to it
+    this.secureSocket = new TLSSocket(originalSocket, {
+      ...tlsSocketOptions,
 
-          const tlsSocketOptions = await this.createTlsSocketOptions(
-            options,
-            this.tlsInfo!
-          );
+      // This is a server-side TLS socket
+      isServer: true,
 
-          callback(null, createSecureContext(tlsSocketOptions));
-        },
-      });
+      // Record SNI info and re-create TLS options based on it
+      SNICallback: async (sniServerName, callback) => {
+        this.tlsInfo!.sniServerName = sniServerName;
 
+        const tlsSocketOptions = await this.createTlsSocketOptions(
+          options,
+          this.tlsInfo!
+        );
+
+        callback(null, createSecureContext(tlsSocketOptions));
+      },
+    });
+
+    await new Promise<void>((resolve) => {
       // Since we create a TLSSocket out of band from a typical tls.Server,
       // we have to manually validate client certs ourselves as done here:
       // https://github.com/nodejs/node/blob/aeaffbb385c9fc756247e6deaa70be8eb8f59496/lib/_tls_wrap.js#L1248
-      this.secureSocket.on('secure', () => {
+      this.secureSocket!.on('secure', () => {
         onServerSocketSecure.bind(this.secureSocket)();
         resolve();
       });
-
-      // Re-create event handlers for the secure socket
-      this.createSocketHandlers(this.secureSocket);
-
-      // Resume the socket
-      this.socket.resume();
-
-      // Replace socket with the secure socket
-      this.socket = this.secureSocket;
     });
+
+    // Re-create event handlers for the secure socket
+    this.createSocketHandlers(this.secureSocket);
+
+    // Replace socket with the secure socket
+    this.socket = this.secureSocket;
+
+    await this.options.onTlsUpgrade?.(this.state);
+
+    // Resume the socket
+    originalSocket.resume();
   }
 
   /**

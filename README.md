@@ -333,8 +333,6 @@ async function getServerById(id: string) {
 }
 
 const server = net.createServer((socket) => {
-  let proxySocket: Socket;
-
   const connection = new PostgresConnection(socket, {
     tls,
     // This hook occurs before startup messages are received from the client,
@@ -346,7 +344,7 @@ const server = net.createServer((socket) => {
           code: '08000',
           message: `ssl connection required`,
         });
-        socket.end();
+        connection.socket.end();
         return;
       }
 
@@ -356,7 +354,7 @@ const server = net.createServer((socket) => {
           code: '08000',
           message: `ssl sni extension required`,
         });
-        socket.end();
+        connection.socket.end();
         return;
       }
 
@@ -368,37 +366,23 @@ const server = net.createServer((socket) => {
       const serverInfo = await getServerById(serverId);
 
       // Establish a TCP connection to the downstream server using the above host/port
-      proxySocket = connect(serverInfo);
+      const proxySocket = connect(serverInfo);
 
-      // Forward all data received from the downstream server back to the client
-      proxySocket.on('data', (data) => {
-        connection.sendData(data);
-      });
+      // Detach from the `PostgresConnection` to prevent further buffering/processing
+      const socket = connection.detach();
 
-      // If the proxy socket ends, end the client socket
-      proxySocket.on('end', () => {
-        socket.end();
-      });
-    },
-    async onMessage(data, { tlsInfo }) {
-      // Only forward messages after the connection has been upgraded to TLS
-      if (!tlsInfo) {
-        return false;
-      }
+      // Pipe data directly between sockets
+      proxySocket.pipe(socket);
+      socket.pipe(proxySocket);
 
-      if (!proxySocket) {
-        connection.sendError({
-          severity: 'FATAL',
-          code: 'XX000',
-          message: `internal error connecting to proxy socket`,
-        });
-        socket.end();
-        return true;
-      }
+      proxySocket.on('end', () => socket.end());
+      socket.on('end', () => proxySocket.end());
 
-      // Forward all messages from the client to the downstream server
-      proxySocket.write(data);
-      return true;
+      proxySocket.on('error', (err) => socket.destroy(err));
+      socket.on('error', (err) => proxySocket.destroy(err));
+
+      proxySocket.on('close', () => socket.destroy());
+      socket.on('close', () => proxySocket.destroy());
     },
   });
 
