@@ -14,7 +14,7 @@ This acts as a layer in front of your Postgres database (or any other database).
 ## Features
 
 - **Authentication:** Supports multiple auth modes - currently `cleartextPassword`, `md5Password`, and `certificate` (more planned)
-- **TLS Encryption:** Handles standard TLS (SSL) upgrades with SNI support (useful for reverse proxying)
+- **TLS Encryption:** Handles standard TLS (SSL) upgrades with SNI support (useful for [reverse proxying](#reverse-proxy-using-sni))
 - **Modular:** You control the server while the library manages the protocol
 - **Hooks:** Hook into various points in the protocol's lifecycle (auth, query, etc)
 - **Escape hatch:** Access the raw protocol messages at any point in the lifecycle
@@ -311,7 +311,7 @@ psql (16.2, server 16.3 (PGlite 0.2.0))
 
 ### Reverse Proxy using SNI
 
-The [server name indication (SNI)](https://en.wikipedia.org/wiki/Server_Name_Indication) TLS extension allows clients to indicate which server hostname they intend to connect to when establishing an encrypted TLS connection with the server. This is commonly used by HTTPS reverse proxies - without it, reverse proxies would be unable to identify which server to forward requests to since all messages are encrypted. You would need a separate IP/port pair for every server name you wish to connect to.
+The [server name indication (SNI)](https://en.wikipedia.org/wiki/Server_Name_Indication) TLS extension allows clients to indicate which server hostname they intend to connect to when establishing an encrypted TLS connection. This is commonly used by HTTPS reverse proxies - without it, reverse proxies would be unable to identify which server to forward requests to since all messages are encrypted. You would need a separate IP/port pair for every server name you wish to connect to.
 
 `pg-gateway` supports SNI with Postgres TLS connections to give you the same benefit. You can hook into the TLS upgrade step to retrieve the SNI server name sent by the client and use it to establish a reverse proxy connection to other Postgres servers, all over a single gateway IP/port.
 
@@ -474,6 +474,8 @@ _/etc/hosts_
 
 127.0.0.1 12345.db.example.com
 ```
+
+On Windows this file lives at `C:\Windows\System32\Drivers\etc\hosts`.
 
 ## Development
 
