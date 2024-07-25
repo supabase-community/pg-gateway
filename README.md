@@ -296,6 +296,19 @@ server.listen(5432, () => {
 });
 ```
 
+You can test the connection using `psql`:
+
+```shell
+psql -h localhost -U postgres
+```
+
+You should be prompted for a password (`postgres`) and then brought into the `psql` REPL. At this point you are communicating directly with PGlite. You can verify that you are connected to PGlite by looking at the server version printed by `psql`:
+
+```
+psql (16.2, server 16.3 (PGlite 0.2.0))
+...
+```
+
 ### Reverse Proxy using SNI
 
 The [server name indication (SNI)](https://en.wikipedia.org/wiki/Server_Name_Indication) TLS extension allows clients to indicate which server hostname they intend to connect to when establishing an encrypted TLS connection with the server. This is commonly used by HTTPS reverse proxies - without it, reverse proxies would be unable to identify which server to forward requests to since all messages are encrypted. You would need a separate IP/port pair for every server name you wish to connect to.
