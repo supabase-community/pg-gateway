@@ -383,7 +383,10 @@ export default class PostgresConnection {
     this.reader.setBuffer(0, data);
 
     // If the `onMessage()` hook returns `true`, it managed this response so skip further processing
+    // We must pause/resume the socket before/after each hook to prevent race conditions
+    this.socket.pause();
     const messageSkip = await this.options.onMessage?.(data, this.state);
+    this.socket.resume();
 
     if (!this.hasStarted) {
       if (this.isSslRequest(data)) {
@@ -454,7 +457,11 @@ export default class PostgresConnection {
       };
 
       this.hasStarted = true;
+
+      // We must pause/resume the socket before/after each hook to prevent race conditions
+      this.socket.pause();
       const startupSkip = await this.options.onStartup?.(this.state);
+      this.socket.resume();
 
       // `onStartup()` returned true, so skip further processing
       if (startupSkip) {
@@ -509,7 +516,10 @@ export default class PostgresConnection {
             return;
           }
 
+          // We must pause/resume the socket before/after each hook to prevent race conditions
+          this.socket.pause();
           await this.completeAuthentication();
+          this.socket.resume();
           break;
         }
       }
@@ -543,6 +553,9 @@ export default class PostgresConnection {
         switch (authMode) {
           case 'cleartextPassword': {
             const password = this.reader.cstring();
+
+            // We must pause/resume the socket before/after each hook to prevent race conditions
+            this.socket.pause();
             const valid = await this.options.validateCredentials?.(
               {
                 authMode,
@@ -551,6 +564,7 @@ export default class PostgresConnection {
               },
               this.state
             );
+            this.socket.resume();
 
             if (!valid) {
               this.sendAuthenticationFailedError();
@@ -622,7 +636,10 @@ export default class PostgresConnection {
 
     this.sendReadyForQuery('idle');
 
+    // We must pause/resume the socket before/after each hook to prevent race conditions
+    this.socket.pause();
     await this.options.onAuthenticated?.(this.state);
+    this.socket.resume();
   }
 
   isSslRequest(data: Buffer) {
