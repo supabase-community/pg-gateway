@@ -67,9 +67,11 @@ const server = net.createServer((socket) => {
       const databaseId = getIdFromServerName(tlsInfo.sniServerName);
 
       db = new PGlite(`./dbs/${databaseId}`);
-
+    },
+    async onStartup() {
       // Wait for PGlite to be ready before further processing
       await db.waitReady;
+      return false;
     },
     async onMessage(data, { isAuthenticated }) {
       // Only forward messages to PGlite after authentication

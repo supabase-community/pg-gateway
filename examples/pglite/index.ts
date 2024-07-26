@@ -20,6 +20,11 @@ const server = net.createServer((socket) => {
       }
       return false;
     },
+    async onStartup() {
+      // Wait for PGlite to be ready before further processing
+      await db.waitReady;
+      return false;
+    },
     async onMessage(data, { isAuthenticated }) {
       // Only forward messages to PGlite after authentication
       if (!isAuthenticated) {
