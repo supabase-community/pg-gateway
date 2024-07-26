@@ -5,7 +5,7 @@ import {
   PostgresConnection,
   TlsOptionsCallback,
   hashMd5Password,
-} from '../../src';
+} from 'pg-gateway';
 
 const tls: TlsOptionsCallback = async ({ sniServerName }) => {
   // Optionally serve different certs based on `sniServerName`

@@ -1,0 +1,14 @@
+{
+  "name": "reverse-proxy-sni-example",
+  "scripts": {
+    "dev": "tsx index.ts"
+  },
+  "dependencies": {
+    "pg-gateway": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.11",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.3"
+  }
+}

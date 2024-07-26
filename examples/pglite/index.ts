@@ -1,6 +1,6 @@
 import { PGlite } from '@electric-sql/pglite';
 import net from 'node:net';
-import { PostgresConnection, hashMd5Password } from '../../src';
+import { PostgresConnection, hashMd5Password } from 'pg-gateway';
 
 const db = new PGlite();
 
