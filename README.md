@@ -125,7 +125,9 @@ This hook is called after the initial startup message has been received from the
 
 This is called after the connection is upgraded to TLS (if TLS is being used) but before authentication messages are sent to the frontend.
 
-The callback should return `true` to indicate that it has responded to the startup message and no further processing should occur. Return `false` to continue built-in processing.
+The callback should return `true` to indicate that it has responded to the startup message and no further processing should occur. This can be useful for situations where you want to receive the startup client information (such as `user`), but then proxy all future messages (including auth messages) to another DB. Return `false` to continue built-in processing.
+
+> **Warning:** By managing the post-startup response yourself (returning `true`), you bypass further processing by the `PostgresConnection` which means some state may not be collected and hooks won't be called.
 
 ```typescript
 const connection = new PostgresConnection(socket, {
@@ -194,6 +196,8 @@ This hook gives you access to raw messages at any point in the protocol lifecycl
 2. The second argument contains a [`state`](#state) object which holds connection information gathered so far and can be used to understand where the protocol is at in its lifecycle.
 
 The callback should return `true` to indicate that you have handled the message response yourself and that no further processing should be done. Returning `false` will result in further processing by the `PostgresConnection`. The callback can be either synchronous or asynchronous.
+
+> **Warning:** By managing the message yourself (returning `true`), you bypass further processing by the `PostgresConnection` which means some state may not be collected and hooks won't be called depending on where the protocol is at in its lifecycle.
 
 ```typescript
 const connection = new PostgresConnection(socket, {

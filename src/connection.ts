@@ -146,6 +146,10 @@ export type PostgresConnectionOptions = {
    * Callback should return `true` to indicate that it has responded to the startup
    * message and no further processing should occur. Return `false` to continue
    * built-in processing.
+   *
+   * **Warning:** By managing the post-startup response yourself (returning `true`),
+   * you bypass further processing by the `PostgresConnection` which means some state
+   * may not be collected and hooks won't be called.
    */
   onStartup?(state: State): boolean | Promise<boolean>;
 
@@ -166,6 +170,10 @@ export type PostgresConnectionOptions = {
    * Callback should return `true` to indicate that it has responded to the message
    * and no further processing should occur. Return `false` to continue
    * built-in processing.
+   *
+   * **Warning:** By managing the message yourself (returning `true`), you bypass further
+   * processing by the `PostgresConnection` which means some state may not be collected
+   * and hooks won't be called depending on where the protocol is at in its lifecycle.
    */
   onMessage?(data: Uint8Array, state: State): boolean | Promise<boolean>;
 
@@ -216,6 +224,10 @@ export default class PostgresConnection {
 
   private boundDataHandler: (data: Buffer) => Promise<void>;
 
+  private buffer: Buffer = Buffer.alloc(0);
+  private bufferLength: number = 0;
+  private bufferOffset: number = 0;
+
   constructor(
     public socket: Socket,
     public options: PostgresConnectionOptions = {}
@@ -257,18 +269,129 @@ export default class PostgresConnection {
     return this.socket;
   }
 
+  /**
+   * Processes incoming data by buffering it and parsing messages.
+   *
+   * Inspired by https://github.com/brianc/node-postgres/blob/54eb0fa216aaccd727765641e7d1cf5da2bc483d/packages/pg-protocol/src/parser.ts#L91-L119
+   */
   async handleData(data: Buffer) {
+    // Wrap in try-catch to prevent server from crashing during exceptions
+    try {
+      this.mergeBuffer(data);
+
+      const bufferFullLength = this.bufferOffset + this.bufferLength;
+      let offset = this.bufferOffset;
+
+      // The initial message only has a 4 byte header containing the message length
+      // while all subsequent messages have a 5 byte header containing first a single
+      // byte code then a 4 byte message length
+      const codeLength = !this.hasStarted ? 0 : 1;
+      const headerLength = 4 + codeLength;
+
+      // If we have enough buffer to read the message header
+      while (offset + headerLength <= bufferFullLength) {
+        // The length passed in the message header
+        const length = this.buffer.readUInt32BE(offset + codeLength);
+
+        // The length passed in the message header does not include the first single
+        // byte code, so we account for it here
+        const fullMessageLength = codeLength + length;
+
+        // If we have enough buffer to read the entire message
+        if (offset + fullMessageLength <= bufferFullLength) {
+          // Create a Buffer view that points to the same memory as the main buffer,
+          // but crops it at the message boundaries
+          const messageData = this.buffer.subarray(offset, fullMessageLength);
+
+          // Process the message
+          await this.handleMessage(messageData);
+
+          // Move offset pointer
+          offset += fullMessageLength;
+        } else {
+          break;
+        }
+      }
+
+      if (offset === bufferFullLength) {
+        // No more use for the buffer
+        this.buffer = Buffer.alloc(0);
+        this.bufferLength = 0;
+        this.bufferOffset = 0;
+      } else {
+        // Adjust the cursors of remainingBuffer
+        this.bufferLength = bufferFullLength - offset;
+        this.bufferOffset = offset;
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  /**
+   * Merges new data with the existing buffer.
+   *
+   * Inspired by https://github.com/brianc/node-postgres/blob/54eb0fa216aaccd727765641e7d1cf5da2bc483d/packages/pg-protocol/src/parser.ts#L121-L152
+   */
+  private mergeBuffer(buffer: Buffer): void {
+    // If we have left over buffer from the last packet
+    if (this.bufferLength > 0) {
+      const newLength = this.bufferLength + buffer.byteLength;
+      const newFullLength = newLength + this.bufferOffset;
+
+      if (newFullLength > this.buffer.byteLength) {
+        // We can't concat the new buffer with the remaining one
+        let newBuffer: Buffer;
+        if (
+          newLength <= this.buffer.byteLength &&
+          this.bufferOffset >= this.bufferLength
+        ) {
+          // We can move the relevant part to the beginning of the buffer instead of allocating a new buffer
+          newBuffer = this.buffer;
+        } else {
+          // Allocate a new larger buffer
+          let newBufferLength = this.buffer.byteLength * 2;
+          while (newLength >= newBufferLength) {
+            newBufferLength *= 2;
+          }
+          newBuffer = Buffer.allocUnsafe(newBufferLength);
+        }
+        // Move the remaining buffer to the new one
+        this.buffer.copy(
+          newBuffer,
+          0,
+          this.bufferOffset,
+          this.bufferOffset + this.bufferLength
+        );
+        this.buffer = newBuffer;
+        this.bufferOffset = 0;
+      }
+      // Concat the new buffer with the remaining one
+      buffer.copy(this.buffer, this.bufferOffset + this.bufferLength);
+      this.bufferLength = newLength;
+    } else {
+      this.buffer = buffer;
+      this.bufferOffset = 0;
+      this.bufferLength = buffer.byteLength;
+    }
+  }
+
+  /**
+   * Processes a single PG protocol message.
+   */
+  async handleMessage(data: Buffer) {
     this.reader.setBuffer(0, data);
 
     // If the `onMessage()` hook returns `true`, it managed this response so skip further processing
-    const skip = await this.options.onMessage?.(data, this.state);
-
-    if (skip) {
-      return;
-    }
+    const messageSkip = await this.options.onMessage?.(data, this.state);
 
     if (!this.hasStarted) {
       if (this.isSslRequest(data)) {
+        // `onMessage()` returned true, so skip further processing
+        if (messageSkip) {
+          return;
+        }
+
         // If no TLS options are set, respond with 'N' to indicate TLS is not supported
         if (!this.options.tls) {
           this.writer.addString('N');
@@ -288,6 +411,15 @@ export default class PostgresConnection {
       }
 
       // Otherwise this is a StartupMessage
+
+      // `onMessage()` returned true, so skip further processing
+      if (messageSkip) {
+        // We need to track `hasStarted` despite `messageSkip`, because without it,
+        // our `handleData()` method will incorrectly buffer/parse future messages
+        this.hasStarted = true;
+        return;
+      }
+
       const { majorVersion, minorVersion, parameters } =
         this.readStartupMessage();
 
@@ -322,9 +454,10 @@ export default class PostgresConnection {
       };
 
       this.hasStarted = true;
-      const skip = await this.options.onStartup?.(this.state);
+      const startupSkip = await this.options.onStartup?.(this.state);
 
-      if (skip) {
+      // `onStartup()` returned true, so skip further processing
+      if (startupSkip) {
         return;
       }
 
@@ -354,7 +487,6 @@ export default class PostgresConnection {
           }
 
           if (!this.secureSocket.authorized) {
-            console.log(this.secureSocket.authorizationError);
             this.sendError({
               severity: 'FATAL',
               code: '08000',
@@ -382,6 +514,11 @@ export default class PostgresConnection {
         }
       }
 
+      return;
+    }
+
+    // `onMessage()` returned true, so skip further processing
+    if (messageSkip) {
       return;
     }
 
@@ -465,8 +602,6 @@ export default class PostgresConnection {
       }
       // @see https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-TERMINATION
       case FrontendMessageCode.Terminate: {
-        console.log('Client sent termination message');
-        const { query } = this.readQuery();
         this.socket.end();
         return;
       }
