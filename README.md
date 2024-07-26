@@ -102,7 +102,7 @@ const connection = new PostgresConnection(socket, {
 
 This hook is called after the TLS upgrade has completed. It passes a [`state`](#state) argument which holds connection information gathered so far like `tlsInfo`. The callback can be either synchronous or asynchronous.
 
-This will be called before the startup message is received from the frontend (if TLS is being used) so is a good place to establish [proxy connections](#reverse-proxy-using-sni) if desired.
+This will be called before the startup message is received from the frontend (if TLS is being used) so is a good place to establish [proxy connections](#reverse-proxy-using-sni) if desired. Note that a [`detach()`](#detach) method is also available if you wish to detach from the `PostgresConnection` after the proxy has been established.
 
 ```typescript
 const tls: TlsOptions = {
@@ -241,6 +241,17 @@ console.log(connection.state);
 ```
 
 It is also passed as an argument to most hooks for convenience.
+
+## `detach()`
+
+A `detach()` method exists on the `PostgresConnection` to allow you to completely detach the socket from the `PostgresConnection` and handle all future data processing yourself. This is useful when [reverse proxying](#reverse-proxy-using-sni) to prevent the `PostgresConnection` from continuing to process each message after the proxy connection is established.
+
+Calling `detach()` will return the current `Socket` which may be different than the original socket if a TLS upgrade occurred (ie. a `TLSSocket`). The `PostgresConnection` will remove all event listeners from the socket and no further processing will take place.
+
+```typescript
+const connection = new PostgresConnection(socket);
+const socket = connection.detach();
+```
 
 ## Examples
 
