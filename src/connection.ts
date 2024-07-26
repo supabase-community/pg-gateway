@@ -560,6 +560,10 @@ export default class PostgresConnection {
       },
     });
 
+    // Also pause the new secure socket until our own hooks complete
+    this.secureSocket.pause();
+
+    // Wait for TLS negotiations to complete
     await new Promise<void>((resolve) => {
       // Since we create a TLSSocket out of band from a typical tls.Server,
       // we have to manually validate client certs ourselves as done here:
@@ -576,9 +580,14 @@ export default class PostgresConnection {
     // Replace socket with the secure socket
     this.socket = this.secureSocket;
 
+    // TLS upgrade is complete, call hook
     await this.options.onTlsUpgrade?.(this.state);
 
-    // Resume the socket
+    // Pausing the secure socket until `onTlsUpgrade` completes allows the consumer to
+    // asynchronously initialize anything they need before new messages arrive
+    this.secureSocket.resume();
+
+    // Resume the TCP socket
     originalSocket.resume();
   }
 
