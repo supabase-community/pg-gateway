@@ -239,6 +239,8 @@ export default class PostgresConnection {
   serverNonce?: string;
   iterationCount?: number;
   salt?: Buffer;
+  clientNonce?: string;
+  clientFirstMessageBare?: string;
 
   constructor(
     public socket: Socket,
@@ -1035,12 +1037,12 @@ export default class PostgresConnection {
 
   private async processSaslClientFirstMessage(clientFirstMessage: string) {
     const clientFirstMessageParts = clientFirstMessage.split(',');
-
-    const clientNonce = clientFirstMessageParts.find(part => part.startsWith('r='))?.substring(2) || '';
+    this.clientFirstMessageBare = clientFirstMessageParts.slice(2).join(',');
+    this.clientNonce = clientFirstMessageParts.find(part => part.startsWith('r='))?.substring(2) || '';
 
     // Generate server nonce by appending random bytes to client nonce
     const serverNoncePart = randomBytes(18).toString('base64');
-    this.serverNonce = clientNonce + serverNoncePart;
+    this.serverNonce = this.clientNonce + serverNoncePart;
 
     this.salt = randomBytes(16);
     this.iterationCount = 4096;
@@ -1066,10 +1068,11 @@ export default class PostgresConnection {
     console.log('Client final message:', clientFinalMessage);
 
     const clientFinalMessageParts = clientFinalMessage.split(',');
+    const channelBinding = clientFinalMessageParts.find(part => part.startsWith('c='))?.substring(2);
+    const fullNonce = clientFinalMessageParts.find(part => part.startsWith('r='))?.substring(2);
     const clientProof = clientFinalMessageParts.find(part => part.startsWith('p='))?.substring(2);
-    const clientNonce = clientFinalMessageParts.find(part => part.startsWith('r='))?.substring(2);
 
-    if (!clientProof || !clientNonce) {
+     if (!channelBinding || !fullNonce || !clientProof) {
       this.sendError({
         severity: 'FATAL',
         code: '28000',
@@ -1080,7 +1083,7 @@ export default class PostgresConnection {
     }
 
     // Verify that the nonce matches what we expect
-    if (clientNonce !== this.serverNonce) {
+    if (fullNonce !== this.serverNonce) {
       this.sendError({
         severity: 'FATAL',
         code: '28000',
@@ -1092,14 +1095,11 @@ export default class PostgresConnection {
 
     const { user } = this.clientInfo!.parameters;
     
-    // Reconstruct the client-first-message-bare
-    const clientFirstMessageBare = `n=${user},r=${clientNonce}`;
-
     // Reconstruct the client-final-message-without-proof
-    const clientFinalMessageWithoutProof = clientFinalMessage.substring(0, clientFinalMessage.lastIndexOf(','));
+    const clientFinalMessageWithoutProof = `c=${channelBinding},r=${fullNonce}`;
 
     // Construct the full authMessage
-    const authMessage = `${clientFirstMessageBare},${this.saslServerFirstMessage},${clientFinalMessageWithoutProof}`;
+    const authMessage = `${this.clientFirstMessageBare},${this.saslServerFirstMessage},${clientFinalMessageWithoutProof}`;
 
     // const valid = await this.options.validateCredentials?.({
     //   authMode: 'sasl',
@@ -1116,8 +1116,21 @@ export default class PostgresConnection {
     //   return;
     // }
 
+    console.log('Debug info:');
+    console.log('Client nonce:', this.clientNonce);
+    console.log('Full nonce:', fullNonce);
+    console.log('Server nonce:', this.serverNonce);
+    console.log('Salt:', this.salt!.toString('base64'));
+    console.log('Iteration count:', this.iterationCount);
+    console.log('Client first message bare:', this.clientFirstMessageBare);
+    console.log('SASL server first message:', this.saslServerFirstMessage);
+    console.log('Client final message without proof:', clientFinalMessageWithoutProof);
+    console.log('Auth message:', authMessage);
+
+    const password = 'postgres'; // For testing purposes. In production, retrieve this securely.
+
     // TODO: find a nice way of getting the password from the user
-    const serverSignature = this.calculateServerSignature("postgres", authMessage);
+    const serverSignature = this.calculateServerSignature(password, this.salt!, this.iterationCount!, authMessage);
 
     // Send AuthenticationSASLFinal
     this.writer.addInt32(12); // AuthenticationSASLFinal
@@ -1129,8 +1142,8 @@ export default class PostgresConnection {
     await this.completeAuthentication();
   }
 
-  private calculateServerSignature(password: string, authMessage: string) {
-    const saltedPassword = pbkdf2Sync(password, this.salt!, this.iterationCount!, 32, 'sha256');
+  private calculateServerSignature(password: string, salt: Buffer, iterations: number, authMessage: string): string {
+    const saltedPassword = pbkdf2Sync(password, salt, iterations, 32, 'sha256');
     const serverKey = createHmac('sha256', saltedPassword).update('Server Key').digest();
     const serverSignature = createHmac('sha256', serverKey).update(authMessage).digest();
     return serverSignature.toString('base64');
