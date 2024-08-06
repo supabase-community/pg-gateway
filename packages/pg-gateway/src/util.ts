@@ -26,23 +26,16 @@ export function generateMd5Salt() {
 }
 
 export function verifySaslPassword(params: {
-  password: string,
-  salt: string,
-  iterations: number,
+  saltedPassword: string,
   clientProof: string,
   authMessage: string
 }): boolean {
-  const { password, salt, iterations, clientProof, authMessage } = params;
-
-  // Convert salt and clientProof from base64 to Buffer
-  const saltBuffer = Buffer.from(salt, 'base64');
+  const { saltedPassword, clientProof, authMessage } = params;
+  const saltedPasswordBuffer = Buffer.from(saltedPassword, 'base64');
   const clientProofBuffer = Buffer.from(clientProof, 'base64');
 
-  // Derive the salted password
-  const saltedPassword = pbkdf2Sync(password, saltBuffer, iterations, 32, 'sha256');
-
   // Compute the client key
-  const clientKey = createHmac('sha256', saltedPassword).update('Client Key').digest();
+  const clientKey = createHmac('sha256', saltedPasswordBuffer).update('Client Key').digest();
 
   // Compute the stored key
   const storedKey = createHash('sha256').update(clientKey).digest();

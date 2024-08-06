@@ -1,4 +1,5 @@
 import { PGlite } from '@electric-sql/pglite';
+import { pbkdf2Sync } from 'node:crypto';
 import net from 'node:net';
 import { PostgresConnection, verifySaslPassword } from 'pg-gateway';
 
@@ -8,18 +9,28 @@ const server = net.createServer((socket) => {
   const connection = new PostgresConnection(socket, {
     serverVersion: '16.3 (PGlite 0.2.0)',
     authMode: 'sasl',
+    // async getSalt(credentials) {
+    //   // user credentials.user to fetch the salt
+    //   return 'salt';
+    // },
     async validateCredentials(credentials) {
       if (credentials.authMode === 'sasl') {
         const { clientProof, salt, iterations, authMessage } = credentials;
-        const storedPassword = "postgres";
-
-        return verifySaslPassword({
-          password: storedPassword,
-          salt,
-          iterations,
+        
+        const saltBuffer = Buffer.from(salt, 'base64');
+        const saltedPassword = pbkdf2Sync("postgres", saltBuffer, iterations, 32, 'sha256').toString('base64');
+        
+        const isValid = verifySaslPassword({
+          saltedPassword,
           clientProof,
           authMessage
         });
+
+        if (!isValid) {
+          return false;
+        }
+
+        return saltedPassword;
       }
       return false;
     },
@@ -46,7 +57,7 @@ const server = net.createServer((socket) => {
     },
   });
 
-  socket.on('end', () => {
+  socket.on('close', () => {
     console.log('Client disconnected');
   });
 });
