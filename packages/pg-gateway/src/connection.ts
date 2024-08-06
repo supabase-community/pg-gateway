@@ -616,7 +616,8 @@ export default class PostgresConnection {
             if (!this.saslServerFirstMessage) {
               await this.handleSaslInitialResponse();
             } else {
-              await this.handleSaslFinalResponse();
+              const clientFinalMessage = this.reader.string(length);
+              await this.handleSaslFinalResponse(clientFinalMessage);
             }
             return;
           }
@@ -1060,10 +1061,8 @@ export default class PostgresConnection {
   }
 
   // https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONSASLCONTINUE
-  async handleSaslFinalResponse() {
+  async handleSaslFinalResponse(clientFinalMessage: string) {
     console.log("handleSaslFinalResponse");
-    const clientFinalMessage = this.reader.cstring();
-    console.log("clientFinalMessage", clientFinalMessage);
     console.log('Client final message:', clientFinalMessage);
 
     const clientFinalMessageParts = clientFinalMessage.split(',');
@@ -1102,20 +1101,20 @@ export default class PostgresConnection {
     // Construct the full authMessage
     const authMessage = `${clientFirstMessageBare},${this.saslServerFirstMessage},${clientFinalMessageWithoutProof}`;
 
-    const valid = await this.options.validateCredentials?.({
-      authMode: 'sasl',
-      user,
-      clientProof,
-      salt: this.salt!.toString('base64'),
-      iterations: this.iterationCount!,
-      authMessage,
-    }, this.state);
+    // const valid = await this.options.validateCredentials?.({
+    //   authMode: 'sasl',
+    //   user,
+    //   clientProof,
+    //   salt: this.salt!.toString('base64'),
+    //   iterations: this.iterationCount!,
+    //   authMessage,
+    // }, this.state);
 
-    if (!valid) {
-      this.sendAuthenticationFailedError();
-      this.socket.end();
-      return;
-    }
+    // if (!valid) {
+    //   this.sendAuthenticationFailedError();
+    //   this.socket.end();
+    //   return;
+    // }
 
     // TODO: find a nice way of getting the password from the user
     const serverSignature = this.calculateServerSignature("postgres", authMessage);
