@@ -1,10 +1,7 @@
 {
-  "private": true,
-  "scripts": {
-    "example": "npm run dev --workspace"
-  },
-  "workspaces": [
-    "packages/*",
-    "examples/*"
-  ]
+	"private": true,
+	"scripts": {
+		"example": "npm run dev --workspace"
+	},
+	"workspaces": ["packages/*", "examples/*"]
 }
