@@ -1,6 +1,7 @@
 import { createHmac, randomBytes } from "node:crypto";
 import type { Socket } from "node:net";
 import {
+  type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type PeerCertificate,
 	TLSSocket,
 	type TLSSocketOptions,
 	createSecureContext,
@@ -84,7 +85,7 @@ export type CertificateAuth = {
 	validateCredentials: (
 		credentials: {
 			user: string;
-			certificate: string;
+			certificate: PeerCertificate;
 		},
 		state: State,
 	) => boolean | Promise<boolean>;
@@ -571,14 +572,19 @@ export default class PostgresConnection {
 						return;
 					}
 
-					const cert = this.secureSocket.getPeerCertificate();
-					const clientCN = cert.subject.CN;
+					const valid = await this.options.auth.validateCredentials(
+						{
+							user: this.clientInfo.parameters.user,
+							certificate: this.secureSocket.getPeerCertificate(),
+						},
+						this.state,
+					);
 
-					if (clientCN !== this.clientInfo.parameters.user) {
+					if (!valid) {
 						this.sendError({
 							severity: "FATAL",
 							code: "08000",
-							message: `client certificate CN '${clientCN}' does not match user '${this.clientInfo.parameters.user}'`,
+							message: "client certificate is invalid",
 						});
 						this.socket.end();
 						return;
