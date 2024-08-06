@@ -88,6 +88,8 @@ export type SaslCredentials = {
   authMode: 'sasl';
   user: string;
   clientProof: Buffer;
+  salt: Buffer;
+  iterations: number;
   authMessage: string;
 };
 
@@ -1056,6 +1058,8 @@ export default class PostgresConnection {
       authMode: 'sasl',
       user,
       clientProof,
+      salt: Buffer.from(this.saslServerFirstMessage.split(',')[1].substring(2), 'base64'),
+      iterations: parseInt(this.saslServerFirstMessage.split(',')[2].substring(2)),
       authMessage,
     }, this.state);
 
