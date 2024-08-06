@@ -3,7 +3,7 @@ import { createSecureContext, TLSSocket, TLSSocketOptions } from 'node:tls';
 import { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import { Writer } from 'pg-protocol/dist/buffer-writer';
 import { generateMd5Salt } from './util.js';
-import { randomBytes, pbkdf2Sync, createHmac } from 'crypto';
+import { randomBytes, pbkdf2Sync, createHmac, createHash, timingSafeEqual } from 'crypto';
 
 export const enum FrontendMessageCode {
   Query = 0x51, // Q
@@ -88,11 +88,7 @@ export type SaslCredentials = {
   authMode: 'sasl';
   user: string;
   clientProof: Buffer;
-  salt: Buffer;
-  iterations: number;
-  nonce: string;
-  serverFirstMessage: string;
-  clientFinalMessageWithoutProof: string;
+  authMessage: string;
 };
 
 export type Credentials = CleartextPasswordCredentials | Md5PasswordCredentials | SaslCredentials;
@@ -132,10 +128,7 @@ export type PostgresConnectionOptions = {
    * Callback should return `true` if credentials are valid and
    * `false` if credentials are invalid.
    */
-  validateCredentials?(
-    credentials: Credentials,
-    state: State
-  ): boolean | Promise<boolean> | { password: string } | Promise<{ password: string }>;
+  validateCredentials?(credentials: Credentials, state: State): boolean | Promise<boolean>;
 
   /**
    * Callback after the connection has been upgraded to TLS.
@@ -1057,19 +1050,13 @@ export default class PostgresConnection {
     }
 
     const { user } = this.clientInfo.parameters;
-    const [, saltBase64, iterationsStr] = this.saslServerFirstMessage.split(',');
-    const salt = Buffer.from(saltBase64.substring(2), 'base64');
-    const iterations = parseInt(iterationsStr.substring(2), 10);
+    const authMessage = `n=${user},r=${this.saslNonce},${this.saslServerFirstMessage},${clientFinalMessageWithoutProof}`;
 
     const valid = await this.options.validateCredentials?.({
       authMode: 'sasl',
       user,
       clientProof,
-      salt,
-      iterations,
-      nonce: this.saslNonce,
-      serverFirstMessage: this.saslServerFirstMessage,
-      clientFinalMessageWithoutProof,
+      authMessage,
     }, this.state);
 
     if (!valid) {
@@ -1079,9 +1066,7 @@ export default class PostgresConnection {
     }
 
     // Compute server signature
-    const saltedPassword = pbkdf2Sync(valid.password, salt, iterations, 32, 'sha256');
-    const serverKey = createHmac('sha256', saltedPassword).update('Server Key').digest();
-    const authMessage = `n=${user},r=${this.saslNonce},${this.saslServerFirstMessage},${clientFinalMessageWithoutProof}`;
+    const serverKey = createHmac('sha256', clientProof).update('Server Key').digest();
     const serverSignature = createHmac('sha256', serverKey).update(authMessage).digest('base64');
   
     const serverFinalMessage = `v=${serverSignature}`;
