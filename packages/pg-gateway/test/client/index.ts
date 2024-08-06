@@ -12,7 +12,7 @@ const client = new Socket();
 let saslSession: Session;
 const parser = new Parser();
 
-client.connect(54321, 'localhost', () => {
+client.connect(2345, 'localhost', () => {
   const data = serialize.startup({ user: 'postgres' });
   client.write(data);
 });
@@ -34,7 +34,7 @@ client.on('data', (data) => {
       }
       case 'authenticationSASLContinue': {
         const { data }: { data: string } = msg as any;
-        await continueSession(saslSession, 'postgress', data);
+        await continueSession(saslSession, 'postgres', data);
         const responseData = serialize.sendSCRAMClientFinalMessage(
           saslSession.response
         );

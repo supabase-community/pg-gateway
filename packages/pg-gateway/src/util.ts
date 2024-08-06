@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, pbkdf2Sync, timingSafeEqual } from 'node:crypto';
 
 /**
  * Hashes a password using Postgres' nested MD5 algorithm.
@@ -23,4 +23,31 @@ export function generateMd5Salt() {
   const salt = new Uint8Array(4);
   crypto.getRandomValues(salt);
   return salt;
+}
+
+export function verifySaslPassword(params: {
+  password: string,
+  user: string,
+  clientProof: Buffer,
+  salt: Buffer,
+  iterations: number,
+  nonce: string,
+  serverFirstMessage: string,
+  clientFinalMessageWithoutProof: string
+}): boolean {
+  const { password, user, clientProof, salt, iterations, nonce, serverFirstMessage, clientFinalMessageWithoutProof } = params;
+
+  const saltedPassword = pbkdf2Sync(password, salt, iterations, 32, 'sha256');
+  const clientKey = createHmac('sha256', saltedPassword).update('Client Key').digest();
+  const storedKey = createHash('sha256').update(clientKey).digest();
+
+  const authMessage = `n=${user},r=${nonce},${serverFirstMessage},${clientFinalMessageWithoutProof}`;
+  
+  const clientSignature = createHmac('sha256', storedKey).update(authMessage).digest();
+  const computedClientProof = Buffer.alloc(clientSignature.length);
+  for (let i = 0; i < clientSignature.length; i++) {
+    computedClientProof[i] = clientKey[i] ^ clientSignature[i];
+  }
+
+  return timingSafeEqual(clientProof, computedClientProof);
 }

@@ -3,6 +3,7 @@ import { createSecureContext, TLSSocket, TLSSocketOptions } from 'node:tls';
 import { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import { Writer } from 'pg-protocol/dist/buffer-writer';
 import { generateMd5Salt } from './util.js';
+import { randomBytes, pbkdf2Sync, createHmac } from 'crypto';
 
 export const enum FrontendMessageCode {
   Query = 0x51, // Q
@@ -83,7 +84,18 @@ export type Md5PasswordCredentials = {
   salt: Uint8Array;
 };
 
-export type Credentials = CleartextPasswordCredentials | Md5PasswordCredentials;
+export type SaslCredentials = {
+  authMode: 'sasl';
+  user: string;
+  clientProof: Buffer;
+  salt: Buffer;
+  iterations: number;
+  nonce: string;
+  serverFirstMessage: string;
+  clientFinalMessageWithoutProof: string;
+};
+
+export type Credentials = CleartextPasswordCredentials | Md5PasswordCredentials | SaslCredentials;
 
 export type TlsOptions = {
   key: Buffer;
@@ -105,7 +117,7 @@ export type PostgresConnectionOptions = {
   /**
    * The authentication mode for the server.
    */
-  authMode?: 'none' | 'cleartextPassword' | 'md5Password' | 'certificate';
+  authMode?: 'none' | 'cleartextPassword' | 'md5Password' | 'certificate' | 'sasl';
 
   /**
    * TLS options for when clients send an SSLRequest.
@@ -123,7 +135,7 @@ export type PostgresConnectionOptions = {
   validateCredentials?(
     credentials: Credentials,
     state: State
-  ): boolean | Promise<boolean>;
+  ): boolean | Promise<boolean> | { password: string } | Promise<{ password: string }>;
 
   /**
    * Callback after the connection has been upgraded to TLS.
@@ -221,6 +233,8 @@ export default class PostgresConnection {
   md5Salt = generateMd5Salt();
   clientInfo?: ClientInfo;
   tlsInfo?: TlsInfo;
+  private saslNonce?: string;
+  private saslServerFirstMessage?: string;
 
   private boundDataHandler: (data: Buffer) => Promise<void>;
 
@@ -482,6 +496,10 @@ export default class PostgresConnection {
           this.sendAuthenticationMD5Password(this.md5Salt);
           break;
         }
+        case 'sasl': {
+          this.sendAuthenticationSASL();
+          break;
+        }
         case 'certificate': {
           if (!this.secureSocket) {
             this.sendError({
@@ -594,6 +612,17 @@ export default class PostgresConnection {
             }
 
             await this.completeAuthentication();
+            return;
+          }
+          case 'sasl': {
+            const response = this.reader.cstring();
+            if (!this.saslServerFirstMessage) {
+              // This is the initial SASL response
+              await this.handleSaslInitialResponse(response);
+            } else {
+              // This is the final SASL response
+              await this.handleSaslFinalResponse(response);
+            }
             return;
           }
         }
@@ -973,6 +1002,99 @@ export default class PostgresConnection {
         ? `password authentication failed for user "${this.clientInfo.parameters.user}"`
         : 'password authentication failed',
     });
+  }
+
+  sendAuthenticationSASL() {
+    this.writer.addInt32(10);
+    this.writer.addInt32(0);
+    this.writer.addCString('SCRAM-SHA-256');
+    const response = this.writer.flush(BackendMessageCode.AuthenticationResponse);
+    this.sendData(response);
+  }
+
+  async handleSaslInitialResponse(initialResponseData: string) {
+    const [mechanism, initialResponse] = initialResponseData.split('\0');
+    if (mechanism !== 'SCRAM-SHA-256') {
+      this.sendError({
+        severity: 'FATAL',
+        code: '28000',
+        message: 'Unsupported SASL authentication mechanism',
+      });
+      this.socket.end();
+      return;
+    }
+
+    const clientFirstMessage = Buffer.from(initialResponse, 'base64').toString();
+    const clientNonce = clientFirstMessage.split(',')[1].substring(2);
+
+    this.saslNonce = clientNonce + randomBytes(18).toString('base64');
+    const salt = randomBytes(16);
+    const iterationCount = 4096;
+
+    this.saslServerFirstMessage = `r=${this.saslNonce},s=${salt.toString('base64')},i=${iterationCount}`;
+
+    this.writer.addInt32(11);
+    this.writer.addString('R');
+    this.writer.addInt32(Buffer.byteLength(this.saslServerFirstMessage) + 4);
+    this.writer.addString(this.saslServerFirstMessage);
+    const response = this.writer.flush();
+    this.sendData(response);
+  }
+
+  async handleSaslFinalResponse(finalResponse: string) {
+    const clientFinalMessage = Buffer.from(finalResponse, 'base64').toString();
+    const clientFinalMessageWithoutProof = clientFinalMessage.split(',', 2).join(',');
+    const clientProof = Buffer.from(clientFinalMessage.split(',')[2].substring(2), 'base64');
+
+    if (!this.clientInfo || !this.saslNonce || !this.saslServerFirstMessage) {
+      this.sendError({
+        severity: 'FATAL',
+        code: 'XX000',
+        message: 'SASL authentication state is invalid',
+      });
+      this.socket.end();
+      return;
+    }
+
+    const { user } = this.clientInfo.parameters;
+    const [, saltBase64, iterationsStr] = this.saslServerFirstMessage.split(',');
+    const salt = Buffer.from(saltBase64.substring(2), 'base64');
+    const iterations = parseInt(iterationsStr.substring(2), 10);
+
+    const valid = await this.options.validateCredentials?.({
+      authMode: 'sasl',
+      user,
+      clientProof,
+      salt,
+      iterations,
+      nonce: this.saslNonce,
+      serverFirstMessage: this.saslServerFirstMessage,
+      clientFinalMessageWithoutProof,
+    }, this.state);
+
+    if (!valid) {
+      this.sendAuthenticationFailedError();
+      this.socket.end();
+      return;
+    }
+
+    // Compute server signature
+    const saltedPassword = pbkdf2Sync(valid.password, salt, iterations, 32, 'sha256');
+    const serverKey = createHmac('sha256', saltedPassword).update('Server Key').digest();
+    const authMessage = `n=${user},r=${this.saslNonce},${this.saslServerFirstMessage},${clientFinalMessageWithoutProof}`;
+    const serverSignature = createHmac('sha256', serverKey).update(authMessage).digest('base64');
+  
+    const serverFinalMessage = `v=${serverSignature}`;
+
+    // Send AuthenticationSASLFinal
+    this.writer.addInt32(11);
+    this.writer.addString('R');
+    this.writer.addInt32(Buffer.byteLength(serverFinalMessage) + 4);
+    this.writer.addString(serverFinalMessage);
+    const response = this.writer.flush();
+    this.sendData(response);
+
+    await this.completeAuthentication();
   }
 }
 
