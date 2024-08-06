@@ -492,6 +492,7 @@ export default class PostgresConnection {
           break;
         }
         case 'sasl': {
+          console.log("sending sasl")
           this.sendAuthenticationSASL();
           break;
         }
@@ -560,7 +561,7 @@ export default class PostgresConnection {
 
     const code = this.reader.byte();
     const length = this.reader.int32();
-
+    console.log({ code })
     switch (code) {
       case FrontendMessageCode.Password: {
         switch (authMode) {
@@ -610,12 +611,15 @@ export default class PostgresConnection {
             return;
           }
           case 'sasl': {
+            console.log("receiving sasl response")
             const response = this.reader.cstring();
             if (!this.saslServerFirstMessage) {
               // This is the initial SASL response
+              console.log("handling initial SASL response")
               await this.handleSaslInitialResponse(response);
             } else {
               // This is the final SASL response
+              console.log("handling final SASL response")
               await this.handleSaslFinalResponse(response);
             }
             return;
@@ -1000,10 +1004,13 @@ export default class PostgresConnection {
   }
 
   sendAuthenticationSASL() {
-    this.writer.addInt32(10);
-    this.writer.addInt32(0);
-    this.writer.addCString('SCRAM-SHA-256');
+    const mechanism = 'SCRAM-SHA-256';
+
+    this.writer.addInt32(10); // AuthenticationSASL
+    this.writer.addCString(mechanism);
+
     const response = this.writer.flush(BackendMessageCode.AuthenticationResponse);
+    console.log('Sending AuthenticationSASL:', response);
     this.sendData(response);
   }
 
@@ -1082,7 +1089,7 @@ export default class PostgresConnection {
     this.writer.addString(serverFinalMessage);
     const response = this.writer.flush();
     this.sendData(response);
-
+    console.log('authentication complete');
     await this.completeAuthentication();
   }
 }

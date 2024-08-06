@@ -1,22 +1,25 @@
 import { PGlite } from '@electric-sql/pglite';
 import net from 'node:net';
-import { PostgresConnection, hashMd5Password } from 'pg-gateway';
+import { PostgresConnection, verifySaslPassword } from 'pg-gateway';
 
 const db = new PGlite();
 
 const server = net.createServer((socket) => {
   const connection = new PostgresConnection(socket, {
     serverVersion: '16.3 (PGlite 0.2.0)',
-    authMode: 'md5Password',
+    authMode: 'sasl',
     async validateCredentials(credentials) {
-      if (credentials.authMode === 'md5Password') {
-        const { hash, salt } = credentials;
-        const expectedHash = await hashMd5Password(
-          'postgres',
-          'postgres',
-          salt
-        );
-        return hash === expectedHash;
+      if (credentials.authMode === 'sasl') {
+        const { clientProof, salt, iterations, authMessage } = credentials;
+        const storedPassword = "postgres";
+
+        return verifySaslPassword({
+          password: storedPassword,
+          salt,
+          iterations,
+          clientProof,
+          authMessage
+        });
       }
       return false;
     },
@@ -48,6 +51,6 @@ const server = net.createServer((socket) => {
   });
 });
 
-server.listen(5432, () => {
+server.listen(2345, () => {
   console.log('Server listening on port 5432');
 });

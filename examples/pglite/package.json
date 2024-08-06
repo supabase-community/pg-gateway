@@ -7,7 +7,7 @@
     "pg-gateway": "*"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "npm:@gregnr/pglite@0.2.0-dev.8",
+    "@electric-sql/pglite": "0.2.0-alpha.6",
     "@types/node": "^20.14.11",
     "tsx": "^4.16.2",
     "typescript": "^5.5.3"
