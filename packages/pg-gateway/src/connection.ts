@@ -1,7 +1,7 @@
 import { createHmac, randomBytes } from "node:crypto";
 import type { Socket } from "node:net";
 import {
-  type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type type PeerCertificate,
+	type PeerCertificate,
 	TLSSocket,
 	type TLSSocketOptions,
 	createSecureContext,
