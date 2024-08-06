@@ -19,7 +19,7 @@ client.connect(2345, 'localhost', () => {
 
 client.on('data', (data) => {
   parser.parse(data, async (msg) => {
-    console.log(msg);
+    console.log('received message:', msg);
 
     switch (msg.name) {
       case 'authenticationSASL': {
@@ -29,6 +29,7 @@ client.on('data', (data) => {
           saslSession.mechanism,
           saslSession.response
         );
+        console.log('Sending SASL initial response:', data.toString('hex'));
         client.write(data);
         return;
       }
@@ -38,6 +39,7 @@ client.on('data', (data) => {
         const responseData = serialize.sendSCRAMClientFinalMessage(
           saslSession.response
         );
+        console.log('Sending SASL continue response:', responseData.toString('hex'));
         client.write(responseData);
         return;
       }

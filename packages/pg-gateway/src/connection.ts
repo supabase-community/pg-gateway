@@ -87,8 +87,8 @@ export type Md5PasswordCredentials = {
 export type SaslCredentials = {
   authMode: 'sasl';
   user: string;
-  clientProof: Buffer;
-  salt: Buffer;
+  clientProof: string;
+  salt: string;
   iterations: number;
   authMessage: string;
 };
@@ -236,6 +236,9 @@ export default class PostgresConnection {
   private buffer: Buffer = Buffer.alloc(0);
   private bufferLength: number = 0;
   private bufferOffset: number = 0;
+  serverNonce?: string;
+  iterationCount?: number;
+  salt?: Buffer;
 
   constructor(
     public socket: Socket,
@@ -492,7 +495,6 @@ export default class PostgresConnection {
           break;
         }
         case 'sasl': {
-          console.log("sending sasl")
           this.sendAuthenticationSASL();
           break;
         }
@@ -561,7 +563,7 @@ export default class PostgresConnection {
 
     const code = this.reader.byte();
     const length = this.reader.int32();
-    console.log({ code })
+
     switch (code) {
       case FrontendMessageCode.Password: {
         switch (authMode) {
@@ -611,16 +613,10 @@ export default class PostgresConnection {
             return;
           }
           case 'sasl': {
-            console.log("receiving sasl response")
-            const response = this.reader.cstring();
             if (!this.saslServerFirstMessage) {
-              // This is the initial SASL response
-              console.log("handling initial SASL response")
-              await this.handleSaslInitialResponse(response);
+              await this.handleSaslInitialResponse();
             } else {
-              // This is the final SASL response
-              console.log("handling final SASL response")
-              await this.handleSaslFinalResponse(response);
+              await this.handleSaslFinalResponse();
             }
             return;
           }
@@ -1003,20 +999,21 @@ export default class PostgresConnection {
     });
   }
 
+  // https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONSASL
   sendAuthenticationSASL() {
     const mechanism = 'SCRAM-SHA-256';
-
-    this.writer.addInt32(10); // AuthenticationSASL
-    this.writer.addCString(mechanism);
-
-    const response = this.writer.flush(BackendMessageCode.AuthenticationResponse);
-    console.log('Sending AuthenticationSASL:', response);
+    this.writer.addInt32(10); // Specifies that SASL authentication is required
+    this.writer.addCString(mechanism); // Adds the mechanism name and a null terminator
+    this.writer.addCString(''); // Adds an extra zero byte
+    const response = this.writer.flush(BackendMessageCode.AuthenticationResponse); // 'R' for Authentication
     this.sendData(response);
   }
 
-  async handleSaslInitialResponse(initialResponseData: string) {
-    const [mechanism, initialResponse] = initialResponseData.split('\0');
-    if (mechanism !== 'SCRAM-SHA-256') {
+  // https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONSASLCONTINUE
+  private async handleSaslInitialResponse() {
+    const saslMechanism = this.reader.cstring();
+
+    if (saslMechanism !== 'SCRAM-SHA-256') {
       this.sendError({
         severity: 'FATAL',
         code: '28000',
@@ -1026,47 +1023,91 @@ export default class PostgresConnection {
       return;
     }
 
-    const clientFirstMessage = Buffer.from(initialResponse, 'base64').toString();
-    const clientNonce = clientFirstMessage.split(',')[1].substring(2);
+    const responseLength = this.reader.int32();
+    const clientFirstMessage = this.reader.string(responseLength);
 
-    this.saslNonce = clientNonce + randomBytes(18).toString('base64');
-    const salt = randomBytes(16);
-    const iterationCount = 4096;
+    console.log('SASL mechanism:', saslMechanism);
+    console.log('Client first message:', clientFirstMessage);
 
-    this.saslServerFirstMessage = `r=${this.saslNonce},s=${salt.toString('base64')},i=${iterationCount}`;
+    await this.processSaslClientFirstMessage(clientFirstMessage);
+  }
 
-    this.writer.addInt32(11);
-    this.writer.addString('R');
-    this.writer.addInt32(Buffer.byteLength(this.saslServerFirstMessage) + 4);
-    this.writer.addString(this.saslServerFirstMessage);
-    const response = this.writer.flush();
+  private async processSaslClientFirstMessage(clientFirstMessage: string) {
+    const clientFirstMessageParts = clientFirstMessage.split(',');
+
+    const clientNonce = clientFirstMessageParts.find(part => part.startsWith('r='))?.substring(2) || '';
+
+    // Generate server nonce by appending random bytes to client nonce
+    const serverNoncePart = randomBytes(18).toString('base64');
+    this.serverNonce = clientNonce + serverNoncePart;
+
+    this.salt = randomBytes(16);
+    this.iterationCount = 4096;
+
+    this.saslServerFirstMessage = `r=${this.serverNonce},s=${this.salt.toString('base64')},i=${this.iterationCount}`;
+
+    console.log('Server first message:', this.saslServerFirstMessage);
+
+    this.sendAuthenticationSASLContinue(this.saslServerFirstMessage);
+  }
+
+  private sendAuthenticationSASLContinue(serverFirstMessage: string) {
+    this.writer.addInt32(11); // AuthenticationSASLContinue
+    this.writer.addString(serverFirstMessage);
+    const response = this.writer.flush(BackendMessageCode.AuthenticationResponse);
+    console.log('Sending AuthenticationSASLContinue:', response);
     this.sendData(response);
   }
 
-  async handleSaslFinalResponse(finalResponse: string) {
-    const clientFinalMessage = Buffer.from(finalResponse, 'base64').toString();
-    const clientFinalMessageWithoutProof = clientFinalMessage.split(',', 2).join(',');
-    const clientProof = Buffer.from(clientFinalMessage.split(',')[2].substring(2), 'base64');
+  // https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONSASLCONTINUE
+  async handleSaslFinalResponse() {
+    console.log("handleSaslFinalResponse");
+    const clientFinalMessage = this.reader.cstring();
+    console.log("clientFinalMessage", clientFinalMessage);
+    console.log('Client final message:', clientFinalMessage);
 
-    if (!this.clientInfo || !this.saslNonce || !this.saslServerFirstMessage) {
+    const clientFinalMessageParts = clientFinalMessage.split(',');
+    const clientProof = clientFinalMessageParts.find(part => part.startsWith('p='))?.substring(2);
+    const clientNonce = clientFinalMessageParts.find(part => part.startsWith('r='))?.substring(2);
+
+    if (!clientProof || !clientNonce) {
       this.sendError({
         severity: 'FATAL',
-        code: 'XX000',
-        message: 'SASL authentication state is invalid',
+        code: '28000',
+        message: 'Invalid SASL final message',
       });
       this.socket.end();
       return;
     }
 
-    const { user } = this.clientInfo.parameters;
-    const authMessage = `n=${user},r=${this.saslNonce},${this.saslServerFirstMessage},${clientFinalMessageWithoutProof}`;
+    // Verify that the nonce matches what we expect
+    if (clientNonce !== this.serverNonce) {
+      this.sendError({
+        severity: 'FATAL',
+        code: '28000',
+        message: 'Invalid nonce in SASL final message',
+      });
+      this.socket.end();
+      return;
+    }
+
+    const { user } = this.clientInfo!.parameters;
+    
+    // Reconstruct the client-first-message-bare
+    const clientFirstMessageBare = `n=${user},r=${clientNonce}`;
+
+    // Reconstruct the client-final-message-without-proof
+    const clientFinalMessageWithoutProof = clientFinalMessage.substring(0, clientFinalMessage.lastIndexOf(','));
+
+    // Construct the full authMessage
+    const authMessage = `${clientFirstMessageBare},${this.saslServerFirstMessage},${clientFinalMessageWithoutProof}`;
 
     const valid = await this.options.validateCredentials?.({
       authMode: 'sasl',
       user,
       clientProof,
-      salt: Buffer.from(this.saslServerFirstMessage.split(',')[1].substring(2), 'base64'),
-      iterations: parseInt(this.saslServerFirstMessage.split(',')[2].substring(2)),
+      salt: this.salt!.toString('base64'),
+      iterations: this.iterationCount!,
       authMessage,
     }, this.state);
 
@@ -1076,21 +1117,24 @@ export default class PostgresConnection {
       return;
     }
 
-    // Compute server signature
-    const serverKey = createHmac('sha256', clientProof).update('Server Key').digest();
-    const serverSignature = createHmac('sha256', serverKey).update(authMessage).digest('base64');
-  
-    const serverFinalMessage = `v=${serverSignature}`;
+    // TODO: find a nice way of getting the password from the user
+    const serverSignature = this.calculateServerSignature("postgres", authMessage);
 
     // Send AuthenticationSASLFinal
-    this.writer.addInt32(11);
-    this.writer.addString('R');
-    this.writer.addInt32(Buffer.byteLength(serverFinalMessage) + 4);
-    this.writer.addString(serverFinalMessage);
-    const response = this.writer.flush();
+    this.writer.addInt32(12); // AuthenticationSASLFinal
+    this.writer.addString(`v=${serverSignature}`);
+    const response = this.writer.flush(BackendMessageCode.AuthenticationResponse);
+    console.log('Sending AuthenticationSASLFinal:', response);
     this.sendData(response);
-    console.log('authentication complete');
+
     await this.completeAuthentication();
+  }
+
+  private calculateServerSignature(password: string, authMessage: string) {
+    const saltedPassword = pbkdf2Sync(password, this.salt!, this.iterationCount!, 32, 'sha256');
+    const serverKey = createHmac('sha256', saltedPassword).update('Server Key').digest();
+    const serverSignature = createHmac('sha256', serverKey).update(authMessage).digest();
+    return serverSignature.toString('base64');
   }
 }
 
