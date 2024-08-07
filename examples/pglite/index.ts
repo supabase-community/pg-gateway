@@ -3,36 +3,25 @@ import { PGlite } from '@electric-sql/pglite';
 import {
   type BackendError,
   PostgresConnection,
-  type SaslMetadata,
-  createSaslMetadata,
-  verifySaslPassword,
+  type ScramSha256Data,
+  createScramSha256Data,
 } from 'pg-gateway';
 
 const db = new PGlite();
 
-let metadata: SaslMetadata | undefined;
+let data: ScramSha256Data | undefined;
 
 const server = net.createServer((socket) => {
   const connection = new PostgresConnection(socket, {
     serverVersion: '16.3 (PGlite 0.2.0)',
     auth: {
-      mode: 'sasl',
-      async getMetadata({ username }) {
-        if (!metadata) {
+      method: 'scram-sha-256',
+      async getScramSha256Data({ username }) {
+        if (!data) {
           // helper function to create the metadata for SASL auth
-          metadata = createSaslMetadata('postgres');
+          data = createScramSha256Data('postgres');
         }
-        return metadata;
-      },
-      // can be run internally in pg-gateway, no need to expose that to the user
-      async validateCredentials(credentials) {
-        const { authMessage, clientProof, metadata } = credentials;
-
-        return verifySaslPassword({
-          authMessage,
-          clientProof,
-          storedKey: metadata.storedKey,
-        });
+        return data;
       },
     },
     async onStartup() {

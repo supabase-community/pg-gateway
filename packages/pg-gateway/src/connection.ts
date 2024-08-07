@@ -1,14 +1,21 @@
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import type { Socket } from 'node:net';
 import {
-  type PeerCertificate,
   TLSSocket,
   type TLSSocketOptions,
   createSecureContext,
 } from 'node:tls';
 import { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import { Writer } from 'pg-protocol/dist/buffer-writer';
-import { type SaslMetadata, generateMd5Salt } from './util.js';
+
+import type { Auth } from './auth/index.js';
+import { SaslAuthFlow } from './auth/sasl.js';
+import {
+  CreateServerFinalMessageError,
+  InvalidClientFinalMessage,
+  ScramSha256Flow,
+} from './auth/scram-sha-256.js';
+import { generateMd5Salt } from './util.js';
 
 export enum FrontendMessageCode {
   Query = 0x51, // Q
@@ -75,64 +82,6 @@ export interface BackendError {
   line?: string;
   routine?: string;
 }
-
-export type NoneAuth = {
-  mode: 'none';
-};
-
-export type CertificateAuth = {
-  mode: 'certificate';
-  validateCredentials: (
-    credentials: {
-      user: string;
-      certificate: PeerCertificate;
-    },
-    state: State,
-  ) => boolean | Promise<boolean>;
-};
-
-export type CleartextPasswordAuth = {
-  mode: 'cleartextPassword';
-  validateCredentials: (
-    credentials: {
-      user: string;
-      password: string;
-    },
-    state: State,
-  ) => boolean | Promise<boolean>;
-};
-
-export type Md5PasswordAuth = {
-  mode: 'md5Password';
-  validateCredentials: (
-    credentials: {
-      user: string;
-      hash: string;
-      salt: Uint8Array;
-    },
-    state: State,
-  ) => boolean | Promise<boolean>;
-};
-
-export type SaslAuth = {
-  mode: 'sasl';
-  validateCredentials: (params: {
-    authMessage: string;
-    clientProof: string;
-    username: string;
-    metadata: SaslMetadata;
-  }) => boolean | Promise<boolean>;
-  getMetadata: (params: {
-    username: string;
-  }) => SaslMetadata | Promise<SaslMetadata>;
-};
-
-export type Auth =
-  | NoneAuth
-  | CertificateAuth
-  | CleartextPasswordAuth
-  | Md5PasswordAuth
-  | SaslAuth;
 
 export type TlsOptions = {
   key: Buffer;
@@ -248,15 +197,6 @@ export type State = {
   tlsInfo?: TlsInfo;
 };
 
-export type Sasl = {
-  serverFirstMessage?: string;
-  serverNonce?: string;
-  clientFirstMessageBare?: string;
-  clientNonce?: string;
-  salt: Buffer;
-  iterations: number;
-};
-
 export default class PostgresConnection {
   options: PostgresConnectionOptions & {
     auth: NonNullable<PostgresConnectionOptions['auth']>;
@@ -269,10 +209,8 @@ export default class PostgresConnection {
   md5Salt = generateMd5Salt();
   clientInfo?: ClientInfo;
   tlsInfo?: TlsInfo;
-  sasl: Sasl = {
-    salt: randomBytes(16),
-    iterations: 4096,
-  };
+  scramSha256Flow?: ScramSha256Flow;
+  saslFlow?: SaslAuthFlow;
   buffer: Buffer = Buffer.alloc(0);
   bufferLength = 0;
   bufferOffset = 0;
@@ -283,7 +221,7 @@ export default class PostgresConnection {
     options: PostgresConnectionOptions = {},
   ) {
     this.options = {
-      auth: { mode: 'none' },
+      auth: { method: 'trust' },
       ...options,
     };
     this.boundDataHandler = this.handleData.bind(this);
@@ -533,24 +471,32 @@ export default class PostgresConnection {
       }
 
       // Handle authentication modes
-      switch (this.options.auth.mode) {
-        case 'none': {
+      switch (this.options.auth.method) {
+        case 'trust': {
           await this.completeAuthentication();
           break;
         }
-        case 'cleartextPassword': {
+        case 'password': {
           this.sendAuthenticationCleartextPassword();
           break;
         }
-        case 'md5Password': {
+        case 'md5': {
           this.sendAuthenticationMD5Password(this.md5Salt);
           break;
         }
-        case 'sasl': {
-          this.sendAuthenticationSASL();
+        case 'scram-sha-256': {
+          this.saslFlow = new SaslAuthFlow({
+            socket: this.socket,
+            reader: this.reader,
+            writer: this.writer,
+            username: this.clientInfo.parameters.user,
+            getData: this.options.auth.getScramSha256Data,
+            validateCredentials: this.options.auth.validateCredentials,
+          });
+          this.saslFlow.sendAuthenticationSASL();
           break;
         }
-        case 'certificate': {
+        case 'cert': {
           if (!this.secureSocket) {
             this.sendError({
               severity: 'FATAL',
@@ -571,13 +517,10 @@ export default class PostgresConnection {
             return;
           }
 
-          const valid = await this.options.auth.validateCredentials(
-            {
-              user: this.clientInfo.parameters.user,
-              certificate: this.secureSocket.getPeerCertificate(),
-            },
-            this.state,
-          );
+          const valid = await this.options.auth.validateCredentials({
+            user: this.clientInfo.parameters.user,
+            certificate: this.secureSocket.getPeerCertificate(),
+          });
 
           if (!valid) {
             this.sendError({
@@ -621,19 +564,16 @@ export default class PostgresConnection {
 
     switch (code) {
       case FrontendMessageCode.Password: {
-        switch (this.options.auth.mode) {
-          case 'cleartextPassword': {
+        switch (this.options.auth.method) {
+          case 'password': {
             const password = this.reader.cstring();
 
             // We must pause/resume the socket before/after each hook to prevent race conditions
             this.socket.pause();
-            const valid = await this.options.auth.validateCredentials(
-              {
-                user: this.clientInfo.parameters.user,
-                password,
-              },
-              this.state,
-            );
+            const valid = await this.options.auth.validateCredentials({
+              user: this.clientInfo.parameters.user,
+              password,
+            });
             this.socket.resume();
 
             if (!valid) {
@@ -645,16 +585,13 @@ export default class PostgresConnection {
             await this.completeAuthentication();
             return;
           }
-          case 'md5Password': {
+          case 'md5': {
             const hash = this.reader.cstring();
-            const valid = await this.options.auth.validateCredentials(
-              {
-                user: this.clientInfo.parameters.user,
-                hash,
-                salt: this.md5Salt,
-              },
-              this.state,
-            );
+            const valid = await this.options.auth.validateCredentials({
+              user: this.clientInfo.parameters.user,
+              hash,
+              salt: this.md5Salt,
+            });
 
             if (!valid) {
               this.sendAuthenticationFailedError();
@@ -665,8 +602,8 @@ export default class PostgresConnection {
             await this.completeAuthentication();
             return;
           }
-          case 'sasl': {
-            if (!this.sasl.serverFirstMessage) {
+          case 'scram-sha-256': {
+            if (!this.scramSha256Flow?.serverFirstMessage) {
               await this.handleSaslInitialResponse();
             } else {
               const clientFinalMessage = this.reader.string(length);
@@ -743,8 +680,8 @@ export default class PostgresConnection {
       passphrase,
     };
 
-    // If auth mode is 'certificate' we also need to request a client cert
-    if (this.options.auth.mode === 'certificate') {
+    // If auth method is 'cert' we also need to request a client cert
+    if (this.options.auth.method === 'cert') {
       tlsOptions.requestCert = true;
     }
 
@@ -1057,164 +994,73 @@ export default class PostgresConnection {
     });
   }
 
-  // https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONSASL
-  sendAuthenticationSASL() {
-    const mechanism = 'SCRAM-SHA-256';
-    this.writer.addInt32(10); // Specifies that SASL authentication is required
-    this.writer.addCString(mechanism); // Adds the mechanism name and a null terminator
-    this.writer.addCString(''); // Adds an extra zero byte
-    const response = this.writer.flush(
-      BackendMessageCode.AuthenticationResponse,
-    ); // 'R' for Authentication
-    this.sendData(response);
-  }
-
   // https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONSASLCONTINUE
   async handleSaslInitialResponse() {
-    // narrow the type of auth to sasl
-    if (this.options.auth.mode !== 'sasl') {
-      throw new Error('Invalid auth mode');
-    }
-
     const saslMechanism = this.reader.cstring();
 
-    if (saslMechanism !== 'SCRAM-SHA-256') {
-      this.sendError({
-        severity: 'FATAL',
-        code: '28000',
-        message: 'Unsupported SASL authentication mechanism',
-      });
-      this.socket.end();
-      return;
+    switch (saslMechanism) {
+      case 'SCRAM-SHA-256': {
+        if (this.options.auth.method !== 'scram-sha-256') {
+          throw new Error('Invalid auth method');
+        }
+        const responseLength = this.reader.int32();
+        const clientFirstMessage = this.reader.string(responseLength);
+
+        this.scramSha256Flow = new ScramSha256Flow({
+          getData: this.options.auth.getScramSha256Data,
+          // biome-ignore lint/style/noNonNullAssertion: <explanation>
+          username: this.clientInfo!.parameters.user,
+          validateCredentials: this.options.auth.validateCredentials,
+        });
+
+        const serverFirstMessage =
+          await this.scramSha256Flow.createServerFirstMessage(
+            clientFirstMessage,
+          );
+
+        console.log('clientFirstMessage', clientFirstMessage);
+        console.log('serverFirstMessage', serverFirstMessage);
+
+        // biome-ignore lint/style/noNonNullAssertion: <explanation>
+        this.saslFlow!.sendAuthenticationSASLContinue(serverFirstMessage);
+        return;
+      }
+      default:
+        this.sendError({
+          severity: 'FATAL',
+          code: '28000',
+          message: 'Unsupported SASL authentication mechanism',
+        });
+        this.socket.end();
+        return;
     }
-
-    const responseLength = this.reader.int32();
-    const clientFirstMessage = this.reader.string(responseLength);
-
-    const clientFirstMessageParts = clientFirstMessage.split(',');
-    this.sasl.clientFirstMessageBare = clientFirstMessageParts
-      .slice(2)
-      .join(',');
-    this.sasl.clientNonce =
-      clientFirstMessageParts
-        .find((part) => part.startsWith('r='))
-        ?.substring(2) || '';
-
-    // Generate server nonce by appending random bytes to client nonce
-    const serverNoncePart = randomBytes(18).toString('base64');
-    this.sasl.serverNonce = this.sasl.clientNonce + serverNoncePart;
-    const metadata = await this.options.auth.getMetadata({
-      // biome-ignore lint/style/noNonNullAssertion: <explanation>
-      username: this.clientInfo!.parameters.user,
-    });
-    this.sasl.serverFirstMessage = `r=${this.sasl.serverNonce},s=${metadata.salt},i=${metadata.iterations}`;
-
-    this.sendAuthenticationSASLContinue(this.sasl.serverFirstMessage);
-  }
-
-  // https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONSASLCONTINUE
-  sendAuthenticationSASLContinue(serverFirstMessage: string) {
-    this.writer.addInt32(11); // AuthenticationSASLContinue
-    this.writer.addString(serverFirstMessage);
-    const response = this.writer.flush(
-      BackendMessageCode.AuthenticationResponse,
-    );
-    this.sendData(response);
   }
 
   // https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONSASLCONTINUE
   async handleSaslFinalResponse(clientFinalMessage: string) {
-    // narrow the type of auth to sasl
-    if (this.options.auth.mode !== 'sasl') {
-      throw new Error('Invalid auth mode');
+    if (!this.scramSha256Flow) {
+      throw new Error('No scram-sha-256 flow');
     }
+    console.log('handleSaslFinalResponse', clientFinalMessage);
+    try {
+      const serverFinalMessage =
+        await this.scramSha256Flow.createServerFinalMessage(clientFinalMessage);
 
-    const clientFinalMessageParts = clientFinalMessage.split(',');
-    const channelBinding = clientFinalMessageParts
-      .find((part) => part.startsWith('c='))
-      ?.substring(2);
-    const fullNonce = clientFinalMessageParts
-      .find((part) => part.startsWith('r='))
-      ?.substring(2);
-    const clientProof = clientFinalMessageParts
-      .find((part) => part.startsWith('p='))
-      ?.substring(2);
-
-    if (!channelBinding || !fullNonce || !clientProof) {
-      this.sendError({
-        severity: 'FATAL',
-        code: '28000',
-        message: 'Invalid SASL final message',
-      });
-      this.socket.end();
-      return;
+      // biome-ignore lint/style/noNonNullAssertion: <explanation>
+      this.saslFlow!.sendAuthenticationSASLFinal(serverFinalMessage);
+    } catch (err) {
+      if (err instanceof CreateServerFinalMessageError) {
+        this.sendError({
+          severity: 'FATAL',
+          code: '28000',
+          message: err.message,
+        });
+        this.socket.end();
+        return;
+      }
+      throw err;
     }
-
-    // Verify that the nonce matches what we expect
-    if (fullNonce !== this.sasl.serverNonce) {
-      this.sendError({
-        severity: 'FATAL',
-        code: '28000',
-        message: 'Invalid nonce in SASL final message',
-      });
-      this.socket.end();
-      return;
-    }
-
-    // biome-ignore lint/style/noNonNullAssertion: <explanation>
-    const { user } = this.clientInfo!.parameters;
-
-    // Reconstruct the client-final-message-without-proof
-    const clientFinalMessageWithoutProof = `c=${channelBinding},r=${fullNonce}`;
-
-    // Construct the full authMessage
-    const authMessage = `${this.sasl.clientFirstMessageBare},${this.sasl.serverFirstMessage},${clientFinalMessageWithoutProof}`;
-
-    const metadata = await this.options.auth.getMetadata({ username: user });
-
-    // We must pause/resume the socket before/after each hook to prevent race conditions
-    this.socket.pause();
-    const isValid = await this.options.auth.validateCredentials({
-      authMessage,
-      clientProof,
-      username: user,
-      metadata,
-    });
-    this.socket.resume();
-
-    if (!isValid) {
-      this.sendAuthenticationFailedError();
-      this.socket.end();
-      return;
-    }
-
-    const serverSignature = this.calculateServerSignature(
-      metadata.serverKey,
-      authMessage,
-    );
-
-    this.sendAuthenticationSASLFinal(serverSignature);
-
     await this.completeAuthentication();
-  }
-
-  sendAuthenticationSASLFinal(serverSignature: string) {
-    this.writer.addInt32(12); // AuthenticationSASLFinal
-    this.writer.addString(`v=${serverSignature}`);
-    const response = this.writer.flush(
-      BackendMessageCode.AuthenticationResponse,
-    );
-    this.sendData(response);
-  }
-
-  calculateServerSignature(serverKey: string, authMessage: string): string {
-    const serverSignature = createHmac(
-      'sha256',
-      Buffer.from(serverKey, 'base64'),
-    )
-      .update(authMessage)
-      .digest();
-    return serverSignature.toString('base64');
   }
 }
 

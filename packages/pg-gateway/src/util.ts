@@ -1,11 +1,7 @@
-import {
-  type BinaryLike,
-  createHash,
-  createHmac,
-  pbkdf2Sync,
-  randomBytes,
-  timingSafeEqual,
-} from 'node:crypto';
+import { type BinaryLike, createHash } from 'node:crypto';
+import type { Socket } from 'node:net';
+import type { Writer } from 'pg-protocol/dist/buffer-writer';
+import { type BackendError, BackendMessageCode } from './connection';
 
 /**
  * Hashes a password using Postgres' nested MD5 algorithm.
@@ -37,71 +33,98 @@ export function generateMd5Salt() {
   return salt;
 }
 
-export type SaslMetadata = {
-  salt: string;
-  iterations: number;
-  storedKey: string;
-  serverKey: string;
-};
-
-/**
- * Creates SASL metadata for password authentication.
- * @see https://www.postgresql.org/docs/current/sasl-authentication.html
- */
-export function createSaslMetadata(
-  password: string,
-  iterations = 4096,
-): SaslMetadata {
-  const salt = randomBytes(16).toString('base64');
-  const saltBuffer = Buffer.from(salt, 'base64');
-  const saltedPassword = pbkdf2Sync(
-    password,
-    saltBuffer,
-    iterations,
-    32,
-    'sha256',
-  );
-
-  const clientKey = createHmac('sha256', saltedPassword)
-    .update('Client Key')
-    .digest();
-  const storedKey = createHash('sha256').update(clientKey).digest();
-
-  const serverKey = createHmac('sha256', saltedPassword)
-    .update('Server Key')
-    .digest();
-
-  return {
-    salt,
-    iterations,
-    storedKey: storedKey.toString('base64'),
-    serverKey: serverKey.toString('base64'),
-  };
+export interface SocketWriter {
+  socket: Socket;
+  writer: Writer;
 }
 
-/**
- * Verifies a SASL password using the provided parameters.
- * @see https://www.postgresql.org/docs/current/sasl-authentication.html
- */
-export function verifySaslPassword(params: {
-  authMessage: string;
-  clientProof: string;
-  storedKey: string;
-}) {
-  const { authMessage, clientProof, storedKey } = params;
-  const clientProofBuffer = Buffer.from(clientProof, 'base64');
-  const storedKeyBuffer = Buffer.from(storedKey, 'base64');
+export function sendError(this: SocketWriter, error: BackendError) {
+  this.writer.addString('S');
+  this.writer.addCString(error.severity);
 
-  const clientSignature = createHmac('sha256', storedKeyBuffer)
-    .update(authMessage)
-    .digest();
-  const clientKey = Buffer.alloc(clientProofBuffer.length);
-  for (let i = 0; i < clientProofBuffer.length; i++) {
-    // biome-ignore lint/style/noNonNullAssertion: <explanation>
-    clientKey[i] = clientProofBuffer[i]! ^ clientSignature[i]!;
+  this.writer.addString('V');
+  this.writer.addCString(error.severity);
+
+  this.writer.addString('C');
+  this.writer.addCString(error.code);
+
+  this.writer.addString('M');
+  this.writer.addCString(error.message);
+
+  if (error.detail !== undefined) {
+    this.writer.addString('D');
+    this.writer.addCString(error.detail);
   }
 
-  const computedStoredKey = createHash('sha256').update(clientKey).digest();
+  if (error.hint !== undefined) {
+    this.writer.addString('H');
+    this.writer.addCString(error.hint);
+  }
 
-  return timingSafeEqual(storedKeyBuffer, computedStoredKey);
+  if (error.position !== undefined) {
+    this.writer.addString('P');
+    this.writer.addCString(error.position);
+  }
+
+  if (error.internalPosition !== undefined) {
+    this.writer.addString('p');
+    this.writer.addCString(error.internalPosition);
+  }
+
+  if (error.internalQuery !== undefined) {
+    this.writer.addString('q');
+    this.writer.addCString(error.internalQuery);
+  }
+
+  if (error.where !== undefined) {
+    this.writer.addString('W');
+    this.writer.addCString(error.where);
+  }
+
+  if (error.schema !== undefined) {
+    this.writer.addString('s');
+    this.writer.addCString(error.schema);
+  }
+
+  if (error.table !== undefined) {
+    this.writer.addString('t');
+    this.writer.addCString(error.table);
+  }
+
+  if (error.column !== undefined) {
+    this.writer.addString('c');
+    this.writer.addCString(error.column);
+  }
+
+  if (error.dataType !== undefined) {
+    this.writer.addString('d');
+    this.writer.addCString(error.dataType);
+  }
+
+  if (error.constraint !== undefined) {
+    this.writer.addString('n');
+    this.writer.addCString(error.constraint);
+  }
+
+  if (error.file !== undefined) {
+    this.writer.addString('F');
+    this.writer.addCString(error.file);
+  }
+
+  if (error.line !== undefined) {
+    this.writer.addString('L');
+    this.writer.addCString(error.line);
+  }
+
+  if (error.routine !== undefined) {
+    this.writer.addString('R');
+    this.writer.addCString(error.routine);
+  }
+
+  // Add null byte to the end
+  this.writer.addCString('');
+
+  const response = this.writer.flush(BackendMessageCode.ErrorMessage);
+
+  this.socket.write(response);
 }
