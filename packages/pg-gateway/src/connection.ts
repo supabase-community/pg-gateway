@@ -13,6 +13,7 @@ import type { Md5AuthOptions } from './auth/md5.js';
 import { generateMd5Salt } from './auth/md5.js';
 import type { PasswordAuthOptions } from './auth/password.js';
 import { ScramSha256AuthFlow } from './auth/sasl/scram-sha-256.js';
+import { MessageBuffer } from './message-buffer.js';
 
 export const FrontendMessageCode = {
   Query: 0x51, // Q
@@ -217,9 +218,7 @@ export default class PostgresConnection {
   clientInfo?: ClientInfo;
   tlsInfo?: TlsInfo;
   scramSha256AuthFlow?: ScramSha256AuthFlow;
-  buffer: Buffer = Buffer.alloc(0);
-  bufferLength = 0;
-  bufferOffset = 0;
+  messageBuffer = new MessageBuffer();
   boundDataHandler: (data: Buffer) => Promise<void>;
 
   constructor(
@@ -283,54 +282,12 @@ export default class PostgresConnection {
    * Inspired by https://github.com/brianc/node-postgres/blob/54eb0fa216aaccd727765641e7d1cf5da2bc483d/packages/pg-protocol/src/parser.ts#L91-L119
    */
   async handleData(data: Buffer) {
-    // Wrap in try-catch to prevent server from crashing during exceptions
     try {
-      this.mergeBuffer(data);
-
-      const bufferFullLength = this.bufferOffset + this.bufferLength;
-      let offset = this.bufferOffset;
-
-      // The initial message only has a 4 byte header containing the message length
-      // while all subsequent messages have a 5 byte header containing first a single
-      // byte code then a 4 byte message length
-      const codeLength = !this.hasStarted ? 0 : 1;
-      const headerLength = 4 + codeLength;
-
-      // If we have enough buffer to read the message header
-      while (offset + headerLength <= bufferFullLength) {
-        // The length passed in the message header
-        const length = this.buffer.readUInt32BE(offset + codeLength);
-
-        // The length passed in the message header does not include the first single
-        // byte code, so we account for it here
-        const fullMessageLength = codeLength + length;
-
-        // If we have enough buffer to read the entire message
-        if (offset + fullMessageLength <= bufferFullLength) {
-          // Create a Buffer view that points to the same memory as the main buffer,
-          // but crops it at the message boundaries
-          const messageData = this.buffer.subarray(offset, fullMessageLength);
-
-          // Process the message
-          await this.handleClientMessage(messageData);
-
-          // Move offset pointer
-          offset += fullMessageLength;
-        } else {
-          break;
-        }
-      }
-
-      if (offset === bufferFullLength) {
-        // No more use for the buffer
-        this.buffer = Buffer.alloc(0);
-        this.bufferLength = 0;
-        this.bufferOffset = 0;
-      } else {
-        // Adjust the cursors of remainingBuffer
-        this.bufferLength = bufferFullLength - offset;
-        this.bufferOffset = offset;
-      }
+      this.messageBuffer.mergeBuffer(data);
+      await this.messageBuffer.processMessages(
+        this.handleClientMessage.bind(this),
+        this.hasStarted,
+      );
     } catch (err) {
       console.error(err);
     }
@@ -618,54 +575,6 @@ export default class PostgresConnection {
   private isStartupMessage(message: Buffer): boolean {
     // StartupMessage begins with length (Int32) followed by protocol version (Int32)
     return message.length > 8 && message.readInt32BE(4) === 196608; // 196608 is protocol version 3.0
-  }
-
-  /**
-   * Merges new data with the existing buffer.
-   *
-   * Inspired by https://github.com/brianc/node-postgres/blob/54eb0fa216aaccd727765641e7d1cf5da2bc483d/packages/pg-protocol/src/parser.ts#L121-L152
-   */
-  private mergeBuffer(buffer: Buffer): void {
-    // If we have left over buffer from the last packet
-    if (this.bufferLength > 0) {
-      const newLength = this.bufferLength + buffer.byteLength;
-      const newFullLength = newLength + this.bufferOffset;
-
-      if (newFullLength > this.buffer.byteLength) {
-        // We can't concat the new buffer with the remaining one
-        let newBuffer: Buffer;
-        if (
-          newLength <= this.buffer.byteLength &&
-          this.bufferOffset >= this.bufferLength
-        ) {
-          // We can move the relevant part to the beginning of the buffer instead of allocating a new buffer
-          newBuffer = this.buffer;
-        } else {
-          // Allocate a new larger buffer
-          let newBufferLength = this.buffer.byteLength * 2;
-          while (newLength >= newBufferLength) {
-            newBufferLength *= 2;
-          }
-          newBuffer = Buffer.allocUnsafe(newBufferLength);
-        }
-        // Move the remaining buffer to the new one
-        this.buffer.copy(
-          newBuffer,
-          0,
-          this.bufferOffset,
-          this.bufferOffset + this.bufferLength,
-        );
-        this.buffer = newBuffer;
-        this.bufferOffset = 0;
-      }
-      // Concat the new buffer with the remaining one
-      buffer.copy(this.buffer, this.bufferOffset + this.bufferLength);
-      this.bufferLength = newLength;
-    } else {
-      this.buffer = buffer;
-      this.bufferOffset = 0;
-      this.bufferLength = buffer.byteLength;
-    }
   }
 
   /**
