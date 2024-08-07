@@ -10,9 +10,9 @@ import { Writer } from 'pg-protocol/dist/buffer-writer';
 import type { CertAuthOptions } from './auth/cert.js';
 import type { AuthOptions } from './auth/index.js';
 import type { Md5AuthOptions } from './auth/md5.js';
+import { generateMd5Salt } from './auth/md5.js';
 import type { PasswordAuthOptions } from './auth/password.js';
 import { ScramSha256AuthFlow } from './auth/sasl/scram-sha-256.js';
-import { generateMd5Salt } from './util.js';
 
 export const FrontendMessageCode = {
   Query: 0x51, // Q
