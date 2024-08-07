@@ -1,4 +1,3 @@
-import { createHmac } from 'node:crypto';
 import type { Socket } from 'node:net';
 import {
   TLSSocket,
@@ -8,57 +7,55 @@ import {
 import { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import { Writer } from 'pg-protocol/dist/buffer-writer';
 
+import type { CertAuth } from './auth/cert.js';
 import type { Auth } from './auth/index.js';
-import { SaslAuthFlow } from './auth/sasl.js';
-import {
-  CreateServerFinalMessageError,
-  InvalidClientFinalMessage,
-  ScramSha256Flow,
-} from './auth/scram-sha-256.js';
+import type { Md5Auth } from './auth/md5.js';
+import type { PasswordAuth } from './auth/password.js';
+import { ScramSha256AuthFlow } from './auth/sasl/scram-sha-256.js';
 import { generateMd5Salt } from './util.js';
 
-export enum FrontendMessageCode {
-  Query = 0x51, // Q
-  Parse = 0x50, // P
-  Bind = 0x42, // B
-  Execute = 0x45, // E
-  FunctionCall = 0x46, // F
-  Flush = 0x48, // H
-  Close = 0x43, // C
-  Describe = 0x44, // D
-  CopyFromChunk = 0x64, // d
-  CopyDone = 0x63, // c
-  CopyData = 0x64, // d
-  CopyFail = 0x66, // f
-  Password = 0x70, // p
-  Sync = 0x53, // S
-  Terminate = 0x58, // X
-}
+export const FrontendMessageCode = {
+  Query: 0x51, // Q
+  Parse: 0x50, // P
+  Bind: 0x42, // B
+  Execute: 0x45, // E
+  FunctionCall: 0x46, // F
+  Flush: 0x48, // H
+  Close: 0x43, // C
+  Describe: 0x44, // D
+  CopyFromChunk: 0x64, // d
+  CopyDone: 0x63, // c
+  CopyData: 0x64, // d
+  CopyFail: 0x66, // f
+  Password: 0x70, // p
+  Sync: 0x53, // S
+  Terminate: 0x58, // X
+} as const;
 
-export enum BackendMessageCode {
-  DataRow = 0x44, // D
-  ParseComplete = 0x31, // 1
-  BindComplete = 0x32, // 2
-  CloseComplete = 0x33, // 3
-  CommandComplete = 0x43, // C
-  ReadyForQuery = 0x5a, // Z
-  NoData = 0x6e, // n
-  NotificationResponse = 0x41, // A
-  AuthenticationResponse = 0x52, // R
-  ParameterStatus = 0x53, // S
-  BackendKeyData = 0x4b, // K
-  ErrorMessage = 0x45, // E
-  NoticeMessage = 0x4e, // N
-  RowDescriptionMessage = 0x54, // T
-  ParameterDescriptionMessage = 0x74, // t
-  PortalSuspended = 0x73, // s
-  ReplicationStart = 0x57, // W
-  EmptyQuery = 0x49, // I
-  CopyIn = 0x47, // G
-  CopyOut = 0x48, // H
-  CopyDone = 0x63, // c
-  CopyData = 0x64, // d
-}
+export const BackendMessageCode = {
+  DataRow: 0x44, // D
+  ParseComplete: 0x31, // 1
+  BindComplete: 0x32, // 2
+  CloseComplete: 0x33, // 3
+  CommandComplete: 0x43, // C
+  ReadyForQuery: 0x5a, // Z
+  NoData: 0x6e, // n
+  NotificationResponse: 0x41, // A
+  AuthenticationResponse: 0x52, // R
+  ParameterStatus: 0x53, // S
+  BackendKeyData: 0x4b, // K
+  ErrorMessage: 0x45, // E
+  NoticeMessage: 0x4e, // N
+  RowDescriptionMessage: 0x54, // T
+  ParameterDescriptionMessage: 0x74, // t
+  PortalSuspended: 0x73, // s
+  ReplicationStart: 0x57, // W
+  EmptyQuery: 0x49, // I
+  CopyIn: 0x47, // G
+  CopyOut: 0x48, // H
+  CopyDone: 0x63, // c
+  CopyData: 0x64, // d
+} as const;
 
 /**
  * Modified from pg-protocol to require certain fields.
@@ -197,7 +194,17 @@ export type State = {
   tlsInfo?: TlsInfo;
 };
 
+export const ServerStep = {
+  AwaitingInitialMessage: 'AwaitingInitialMessage',
+  HandlingSslRequest: 'HandlingSslRequest',
+  PerformingAuthentication: 'PerformingAuthentication',
+  ReadyForQuery: 'ReadyForQuery',
+} as const;
+
+export type ServerStepType = (typeof ServerStep)[keyof typeof ServerStep];
+
 export default class PostgresConnection {
+  private step: ServerStepType = ServerStep.AwaitingInitialMessage;
   options: PostgresConnectionOptions & {
     auth: NonNullable<PostgresConnectionOptions['auth']>;
   };
@@ -209,8 +216,7 @@ export default class PostgresConnection {
   md5Salt = generateMd5Salt();
   clientInfo?: ClientInfo;
   tlsInfo?: TlsInfo;
-  scramSha256Flow?: ScramSha256Flow;
-  saslFlow?: SaslAuthFlow;
+  scramSha256AuthFlow?: ScramSha256AuthFlow;
   buffer: Buffer = Buffer.alloc(0);
   bufferLength = 0;
   bufferOffset = 0;
@@ -306,7 +312,7 @@ export default class PostgresConnection {
           const messageData = this.buffer.subarray(offset, fullMessageLength);
 
           // Process the message
-          await this.handleMessage(messageData);
+          await this.handleClientMessage(messageData);
 
           // Move offset pointer
           offset += fullMessageLength;
@@ -328,6 +334,287 @@ export default class PostgresConnection {
     } catch (err) {
       console.error(err);
     }
+  }
+
+  async handleClientMessage(message: Buffer): Promise<void> {
+    this.reader.setBuffer(0, message);
+
+    this.socket.pause();
+    const messageSkip = await this.options.onMessage?.(message, this.state);
+    this.socket.resume();
+
+    if (messageSkip) {
+      return;
+    }
+
+    switch (this.step) {
+      case ServerStep.AwaitingInitialMessage:
+        if (this.isSslRequest(message)) {
+          this.step = ServerStep.HandlingSslRequest;
+          await this.handleSslRequest();
+        } else if (this.isStartupMessage(message)) {
+          // the next step is determined by handleStartupMessage
+          this.handleStartupMessage();
+        } else {
+          throw new Error('Unexpected initial message');
+        }
+        break;
+
+      case ServerStep.HandlingSslRequest:
+        if (this.isStartupMessage(message)) {
+          // the next step is determined by handleStartupMessage
+          this.handleStartupMessage();
+        } else {
+          throw new Error('Expected StartupMessage after SSL negotiation');
+        }
+        break;
+
+      case ServerStep.PerformingAuthentication:
+        if ((await this.handleAuthenticationMessage(message)) === true) {
+          await this.completeAuthentication();
+        }
+        break;
+
+      case ServerStep.ReadyForQuery:
+        await this.handleRegularMessage(message);
+        break;
+
+      default:
+        throw new Error(`Unexpected step: ${this.step}`);
+    }
+  }
+  sendServerParameters() {
+    throw new Error('Method not implemented.');
+  }
+  sendBackendKeyData() {
+    throw new Error('Method not implemented.');
+  }
+  async handleSslRequest() {
+    if (!this.options.tls) {
+      this.writer.addString('N');
+      const result = this.writer.flush();
+      this.sendData(result);
+      return;
+    }
+
+    // Otherwise respond with 'S' to indicate it is supported
+    this.writer.addString('S');
+    const result = this.writer.flush();
+    this.sendData(result);
+
+    // From now on the frontend will communicate via TLS, so upgrade the connection
+    await this.upgradeToTls(this.options.tls);
+  }
+
+  async handleStartupMessage() {
+    const { majorVersion, minorVersion, parameters } =
+      this.readStartupMessage();
+
+    // user is required
+    if (!parameters.user) {
+      this.sendError({
+        severity: 'FATAL',
+        code: '08000',
+        message: 'user is required',
+      });
+      this.socket.end();
+      return;
+    }
+
+    if (majorVersion !== 3 || minorVersion !== 0) {
+      this.sendError({
+        severity: 'FATAL',
+        code: '08000',
+        message: `Unsupported protocol version ${majorVersion.toString()}.${minorVersion.toString()}`,
+      });
+      this.socket.end();
+      return;
+    }
+
+    this.clientInfo = {
+      majorVersion,
+      minorVersion,
+      parameters: {
+        user: parameters.user,
+        ...parameters,
+      },
+    };
+
+    this.hasStarted = true;
+
+    switch (this.options.auth.method) {
+      case 'trust':
+        await this.completeAuthentication();
+        break;
+      case 'password':
+        this.step = ServerStep.PerformingAuthentication;
+        this.sendAuthenticationCleartextPassword();
+        break;
+      case 'md5':
+        this.step = ServerStep.PerformingAuthentication;
+        this.sendAuthenticationMD5Password(this.md5Salt);
+        break;
+      case 'scram-sha-256':
+        this.scramSha256AuthFlow = new ScramSha256AuthFlow({
+          socket: this.socket,
+          reader: this.reader,
+          writer: this.writer,
+          auth: this.options.auth,
+          username: this.clientInfo.parameters.user,
+        });
+        this.step = ServerStep.PerformingAuthentication;
+        this.scramSha256AuthFlow.sendAuthenticationSASL();
+        break;
+      default:
+        throw new Error(
+          `Unsupported authentication method: ${this.options.auth.method}`,
+        );
+    }
+  }
+
+  async handleAuthenticationMessage(message: Buffer) {
+    const code = this.reader.byte();
+    if (code !== FrontendMessageCode.Password) {
+      throw new Error(`Unexpected authentication message code: ${code}`);
+    }
+    switch (this.options.auth.method) {
+      case 'password':
+        return this.handlePasswordAuthenticationMessage(
+          message,
+          this.options.auth,
+        );
+      case 'md5':
+        return this.handleMD5AuthenticationMessage(message, this.options.auth);
+      case 'scram-sha-256':
+        return this.handleScramSha256AuthenticationMessage(message);
+      case 'cert':
+        return this.handleCertAuthenticationMessage(message, this.options.auth);
+      default:
+        throw new Error(
+          `Unsupported authentication method: ${this.options.auth.method}`,
+        );
+    }
+  }
+
+  async handleScramSha256AuthenticationMessage(message: Buffer) {
+    // biome-ignore lint/style/noNonNullAssertion: <explanation>
+    await this.scramSha256AuthFlow!.handleClientMessage(message);
+    // biome-ignore lint/style/noNonNullAssertion: <explanation>
+    return this.scramSha256AuthFlow!.isCompleted;
+  }
+
+  async handlePasswordAuthenticationMessage(
+    message: Buffer,
+    auth: PasswordAuth,
+  ) {
+    const length = this.reader.int32();
+    const password = this.reader.cstring();
+
+    // We must pause/resume the socket before/after each hook to prevent race conditions
+    this.socket.pause();
+    const isValid = await auth.validateCredentials({
+      // biome-ignore lint/style/noNonNullAssertion: <explanation>
+      user: this.clientInfo!.parameters.user,
+      password,
+    });
+    this.socket.resume();
+
+    if (!isValid) {
+      this.sendAuthenticationFailedError();
+      this.socket.end();
+      return;
+    }
+
+    return true;
+  }
+
+  async handleMD5AuthenticationMessage(message: Buffer, auth: Md5Auth) {
+    const length = this.reader.int32();
+    const hash = this.reader.cstring();
+    const isValid = await auth.validateCredentials({
+      // biome-ignore lint/style/noNonNullAssertion: <explanation>
+      user: this.clientInfo!.parameters.user,
+      hash,
+      salt: this.md5Salt,
+    });
+
+    if (!isValid) {
+      this.sendAuthenticationFailedError();
+      this.socket.end();
+      return;
+    }
+
+    return true;
+  }
+
+  async handleCertAuthenticationMessage(message: Buffer, auth: CertAuth) {
+    if (!this.secureSocket) {
+      this.sendError({
+        severity: 'FATAL',
+        code: '08000',
+        message: `ssl connection required when auth mode is 'certificate'`,
+      });
+      this.socket.end();
+      return;
+    }
+
+    if (!this.secureSocket.authorized) {
+      this.sendError({
+        severity: 'FATAL',
+        code: '08000',
+        message: 'client certificate is invalid',
+      });
+      this.socket.end();
+      return;
+    }
+
+    const isValid = await auth.validateCredentials({
+      // biome-ignore lint/style/noNonNullAssertion: <explanation>
+      user: this.clientInfo!.parameters.user,
+      certificate: this.secureSocket.getPeerCertificate(),
+    });
+
+    if (!isValid) {
+      this.sendError({
+        severity: 'FATAL',
+        code: '08000',
+        message: 'client certificate is invalid',
+      });
+      this.socket.end();
+      return;
+    }
+
+    return true;
+  }
+
+  private async handleRegularMessage(message: Buffer): Promise<void> {
+    const code = this.reader.byte();
+
+    switch (code) {
+      case FrontendMessageCode.Terminate:
+        this.handleTerminate(message);
+        break;
+      default:
+        this.sendError({
+          severity: 'ERROR',
+          code: '123',
+          message: 'Message code not yet implemented',
+        });
+        this.sendReadyForQuery('idle');
+    }
+  }
+
+  handleTerminate(message: Buffer) {
+    this.socket.end();
+  }
+
+  private isSslRequest(message: Buffer): boolean {
+    return message.length === 8 && message.readInt32BE(4) === 80877103;
+  }
+
+  private isStartupMessage(message: Buffer): boolean {
+    // StartupMessage begins with length (Int32) followed by protocol version (Int32)
+    return message.length > 8 && message.readInt32BE(4) === 196608; // 196608 is protocol version 3.0
   }
 
   /**
@@ -381,261 +668,261 @@ export default class PostgresConnection {
   /**
    * Processes a single PG protocol message.
    */
-  async handleMessage(data: Buffer) {
-    this.reader.setBuffer(0, data);
+  // async handleMessage(data: Buffer) {
+  //   this.reader.setBuffer(0, data);
 
-    // If the `onMessage()` hook returns `true`, it managed this response so skip further processing
-    // We must pause/resume the socket before/after each hook to prevent race conditions
-    this.socket.pause();
-    const messageSkip = await this.options.onMessage?.(data, this.state);
-    this.socket.resume();
+  //   // --------------------------------------------------------------------------------
 
-    if (!this.hasStarted) {
-      if (this.isSslRequest(data)) {
-        // `onMessage()` returned true, so skip further processing
-        if (messageSkip) {
-          return;
-        }
+  //   // If the `onMessage()` hook returns `true`, it managed this response so skip further processing
+  //   // We must pause/resume the socket before/after each hook to prevent race conditions
+  //   this.socket.pause();
+  //   const messageSkip = await this.options.onMessage?.(data, this.state);
+  //   this.socket.resume();
 
-        // If no TLS options are set, respond with 'N' to indicate TLS is not supported
-        if (!this.options.tls) {
-          this.writer.addString('N');
-          const result = this.writer.flush();
-          this.sendData(result);
-          return;
-        }
+  //   if (!this.hasStarted) {
+  //     if (this.isSslRequest(data)) {
+  //       // `onMessage()` returned true, so skip further processing
+  //       if (messageSkip) {
+  //         return;
+  //       }
 
-        // Otherwise respond with 'S' to indicate it is supported
-        this.writer.addString('S');
-        const result = this.writer.flush();
-        this.sendData(result);
+  //       // If no TLS options are set, respond with 'N' to indicate TLS is not supported
+  //       if (!this.options.tls) {
+  //         this.writer.addString('N');
+  //         const result = this.writer.flush();
+  //         this.sendData(result);
+  //         return;
+  //       }
 
-        // From now on the frontend will communicate via TLS, so upgrade the connection
-        await this.upgradeToTls(this.options.tls);
-        return;
-      }
+  //       // Otherwise respond with 'S' to indicate it is supported
+  //       this.writer.addString('S');
+  //       const result = this.writer.flush();
+  //       this.sendData(result);
 
-      // Otherwise this is a StartupMessage
+  //       // From now on the frontend will communicate via TLS, so upgrade the connection
+  //       await this.upgradeToTls(this.options.tls);
+  //       return;
+  //     }
 
-      // `onMessage()` returned true, so skip further processing
-      if (messageSkip) {
-        // We need to track `hasStarted` despite `messageSkip`, because without it,
-        // our `handleData()` method will incorrectly buffer/parse future messages
-        this.hasStarted = true;
-        return;
-      }
+  //     // Otherwise this is a StartupMessage
 
-      const { majorVersion, minorVersion, parameters } =
-        this.readStartupMessage();
+  //     // `onMessage()` returned true, so skip further processing
+  //     if (messageSkip) {
+  //       // We need to track `hasStarted` despite `messageSkip`, because without it,
+  //       // our `handleData()` method will incorrectly buffer/parse future messages
+  //       this.hasStarted = true;
+  //       return;
+  //     }
 
-      // user is required
-      if (!parameters.user) {
-        this.sendError({
-          severity: 'FATAL',
-          code: '08000',
-          message: 'user is required',
-        });
-        this.socket.end();
-        return;
-      }
+  //     const { majorVersion, minorVersion, parameters } =
+  //       this.readStartupMessage();
 
-      if (majorVersion !== 3 || minorVersion !== 0) {
-        this.sendError({
-          severity: 'FATAL',
-          code: '08000',
-          message: `Unsupported protocol version ${majorVersion.toString()}.${minorVersion.toString()}`,
-        });
-        this.socket.end();
-        return;
-      }
+  //     // user is required
+  //     if (!parameters.user) {
+  //       this.sendError({
+  //         severity: 'FATAL',
+  //         code: '08000',
+  //         message: 'user is required',
+  //       });
+  //       this.socket.end();
+  //       return;
+  //     }
 
-      this.clientInfo = {
-        majorVersion,
-        minorVersion,
-        parameters: {
-          user: parameters.user,
-          ...parameters,
-        },
-      };
+  //     if (majorVersion !== 3 || minorVersion !== 0) {
+  //       this.sendError({
+  //         severity: 'FATAL',
+  //         code: '08000',
+  //         message: `Unsupported protocol version ${majorVersion.toString()}.${minorVersion.toString()}`,
+  //       });
+  //       this.socket.end();
+  //       return;
+  //     }
 
-      this.hasStarted = true;
+  //     this.clientInfo = {
+  //       majorVersion,
+  //       minorVersion,
+  //       parameters: {
+  //         user: parameters.user,
+  //         ...parameters,
+  //       },
+  //     };
 
-      // We must pause/resume the socket before/after each hook to prevent race conditions
-      this.socket.pause();
-      const startupSkip = await this.options.onStartup?.(this.state);
-      this.socket.resume();
+  //     this.hasStarted = true;
 
-      // `onStartup()` returned true, so skip further processing
-      if (startupSkip) {
-        return;
-      }
+  //     // We must pause/resume the socket before/after each hook to prevent race conditions
+  //     this.socket.pause();
+  //     const startupSkip = await this.options.onStartup?.(this.state);
+  //     this.socket.resume();
 
-      // Handle authentication modes
-      switch (this.options.auth.method) {
-        case 'trust': {
-          await this.completeAuthentication();
-          break;
-        }
-        case 'password': {
-          this.sendAuthenticationCleartextPassword();
-          break;
-        }
-        case 'md5': {
-          this.sendAuthenticationMD5Password(this.md5Salt);
-          break;
-        }
-        case 'scram-sha-256': {
-          this.saslFlow = new SaslAuthFlow({
-            socket: this.socket,
-            reader: this.reader,
-            writer: this.writer,
-            username: this.clientInfo.parameters.user,
-            getData: this.options.auth.getScramSha256Data,
-            validateCredentials: this.options.auth.validateCredentials,
-          });
-          this.saslFlow.sendAuthenticationSASL();
-          break;
-        }
-        case 'cert': {
-          if (!this.secureSocket) {
-            this.sendError({
-              severity: 'FATAL',
-              code: '08000',
-              message: `ssl connection required when auth mode is 'certificate'`,
-            });
-            this.socket.end();
-            return;
-          }
+  //     // `onStartup()` returned true, so skip further processing
+  //     if (startupSkip) {
+  //       return;
+  //     }
 
-          if (!this.secureSocket.authorized) {
-            this.sendError({
-              severity: 'FATAL',
-              code: '08000',
-              message: 'client certificate is invalid',
-            });
-            this.socket.end();
-            return;
-          }
+  //     // Handle authentication modes
+  //     switch (this.options.auth.method) {
+  //       case 'trust': {
+  //         await this.completeAuthentication();
+  //         break;
+  //       }
+  //       case 'password': {
+  //         this.sendAuthenticationCleartextPassword();
+  //         break;
+  //       }
+  //       case 'md5': {
+  //         this.sendAuthenticationMD5Password(this.md5Salt);
+  //         break;
+  //       }
+  //       case 'scram-sha-256': {
+  //         this.scramSha256AuthFlow = new ScramSha256AuthFlow({
+  //           socket: this.socket,
+  //           writer: this.writer,
+  //           username: this.clientInfo.parameters.user,
+  //           auth: this.options.auth,
+  //         });
+  //         this.scramSha256AuthFlow.sendAuthenticationSASL();
+  //         break;
+  //       }
+  //       case 'cert': {
+  //         if (!this.secureSocket) {
+  //           this.sendError({
+  //             severity: 'FATAL',
+  //             code: '08000',
+  //             message: `ssl connection required when auth mode is 'certificate'`,
+  //           });
+  //           this.socket.end();
+  //           return;
+  //         }
 
-          const valid = await this.options.auth.validateCredentials({
-            user: this.clientInfo.parameters.user,
-            certificate: this.secureSocket.getPeerCertificate(),
-          });
+  //         if (!this.secureSocket.authorized) {
+  //           this.sendError({
+  //             severity: 'FATAL',
+  //             code: '08000',
+  //             message: 'client certificate is invalid',
+  //           });
+  //           this.socket.end();
+  //           return;
+  //         }
 
-          if (!valid) {
-            this.sendError({
-              severity: 'FATAL',
-              code: '08000',
-              message: 'client certificate is invalid',
-            });
-            this.socket.end();
-            return;
-          }
+  //         const valid = await this.options.auth.validateCredentials({
+  //           user: this.clientInfo.parameters.user,
+  //           certificate: this.secureSocket.getPeerCertificate(),
+  //         });
 
-          // We must pause/resume the socket before/after each hook to prevent race conditions
-          this.socket.pause();
-          await this.completeAuthentication();
-          this.socket.resume();
-          break;
-        }
-      }
+  //         if (!valid) {
+  //           this.sendError({
+  //             severity: 'FATAL',
+  //             code: '08000',
+  //             message: 'client certificate is invalid',
+  //           });
+  //           this.socket.end();
+  //           return;
+  //         }
 
-      return;
-    }
+  //         // We must pause/resume the socket before/after each hook to prevent race conditions
+  //         this.socket.pause();
+  //         await this.completeAuthentication();
+  //         this.socket.resume();
+  //         break;
+  //       }
+  //     }
 
-    // `onMessage()` returned true, so skip further processing
-    if (messageSkip) {
-      return;
-    }
+  //     return;
+  //   }
 
-    // Type narrowing for `this.clientInfo` - this condition should never happen
-    if (!this.clientInfo) {
-      this.sendError({
-        severity: 'FATAL',
-        code: 'XX000',
-        message: 'unknown client info after startup',
-      });
-      this.socket.end();
-      return;
-    }
+  //   // `onMessage()` returned true, so skip further processing
+  //   if (messageSkip) {
+  //     return;
+  //   }
 
-    const code = this.reader.byte();
-    const length = this.reader.int32();
+  //   // Type narrowing for `this.clientInfo` - this condition should never happen
+  //   if (!this.clientInfo) {
+  //     this.sendError({
+  //       severity: 'FATAL',
+  //       code: 'XX000',
+  //       message: 'unknown client info after startup',
+  //     });
+  //     this.socket.end();
+  //     return;
+  //   }
 
-    switch (code) {
-      case FrontendMessageCode.Password: {
-        switch (this.options.auth.method) {
-          case 'password': {
-            const password = this.reader.cstring();
+  //   const code = this.reader.byte();
+  //   const length = this.reader.int32();
 
-            // We must pause/resume the socket before/after each hook to prevent race conditions
-            this.socket.pause();
-            const valid = await this.options.auth.validateCredentials({
-              user: this.clientInfo.parameters.user,
-              password,
-            });
-            this.socket.resume();
+  //   switch (code) {
+  //     case FrontendMessageCode.Password: {
+  //       switch (this.options.auth.method) {
+  //         case 'password': {
+  //           const password = this.reader.cstring();
 
-            if (!valid) {
-              this.sendAuthenticationFailedError();
-              this.socket.end();
-              return;
-            }
+  //           // We must pause/resume the socket before/after each hook to prevent race conditions
+  //           this.socket.pause();
+  //           const valid = await this.options.auth.validateCredentials({
+  //             user: this.clientInfo.parameters.user,
+  //             password,
+  //           });
+  //           this.socket.resume();
 
-            await this.completeAuthentication();
-            return;
-          }
-          case 'md5': {
-            const hash = this.reader.cstring();
-            const valid = await this.options.auth.validateCredentials({
-              user: this.clientInfo.parameters.user,
-              hash,
-              salt: this.md5Salt,
-            });
+  //           if (!valid) {
+  //             this.sendAuthenticationFailedError();
+  //             this.socket.end();
+  //             return;
+  //           }
 
-            if (!valid) {
-              this.sendAuthenticationFailedError();
-              this.socket.end();
-              return;
-            }
+  //           await this.completeAuthentication();
+  //           return;
+  //         }
+  //         case 'md5': {
+  //           const hash = this.reader.cstring();
+  //           const valid = await this.options.auth.validateCredentials({
+  //             user: this.clientInfo.parameters.user,
+  //             hash,
+  //             salt: this.md5Salt,
+  //           });
 
-            await this.completeAuthentication();
-            return;
-          }
-          case 'scram-sha-256': {
-            if (!this.scramSha256Flow?.serverFirstMessage) {
-              await this.handleSaslInitialResponse();
-            } else {
-              const clientFinalMessage = this.reader.string(length);
-              await this.handleSaslFinalResponse(clientFinalMessage);
-            }
-            return;
-          }
-        }
-        return;
-      }
-      case FrontendMessageCode.Query: {
-        const { query } = this.readQuery();
+  //           if (!valid) {
+  //             this.sendAuthenticationFailedError();
+  //             this.socket.end();
+  //             return;
+  //           }
 
-        console.log(`Query: ${query}`);
+  //           await this.completeAuthentication();
+  //           return;
+  //         }
+  //         case 'scram-sha-256': {
+  //           if (!this.scramSha256Flow?.serverFirstMessage) {
+  //             await this.handleSaslInitialResponse();
+  //           } else {
+  //             const clientFinalMessage = this.reader.string(length);
+  //             await this.handleSaslFinalResponse(clientFinalMessage);
+  //           }
+  //           return;
+  //         }
+  //       }
+  //       return;
+  //     }
+  //     case FrontendMessageCode.Query: {
+  //       const { query } = this.readQuery();
 
-        // TODO: call `onQuery` hook to allow consumer to choose how queries are implemented
+  //       console.log(`Query: ${query}`);
 
-        this.sendError({
-          severity: 'ERROR',
-          code: '123',
-          message: 'Queries not yet implemented',
-        });
-        this.sendReadyForQuery('idle');
-        return;
-      }
-      // @see https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-TERMINATION
-      case FrontendMessageCode.Terminate: {
-        this.socket.end();
-        return;
-      }
-    }
-  }
+  //       // TODO: call `onQuery` hook to allow consumer to choose how queries are implemented
+
+  //       this.sendError({
+  //         severity: 'ERROR',
+  //         code: '123',
+  //         message: 'Queries not yet implemented',
+  //       });
+  //       this.sendReadyForQuery('idle');
+  //       return;
+  //     }
+  //     // @see https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-TERMINATION
+  //     case FrontendMessageCode.Terminate: {
+  //       this.socket.end();
+  //       return;
+  //     }
+  //   }
+  // }
 
   /**
    * Completes authentication by forwarding the appropriate messages
@@ -649,19 +936,13 @@ export default class PostgresConnection {
       this.sendParameterStatus('server_version', this.options.serverVersion);
     }
 
+    this.step = ServerStep.ReadyForQuery;
     this.sendReadyForQuery('idle');
 
     // We must pause/resume the socket before/after each hook to prevent race conditions
     this.socket.pause();
     await this.options.onAuthenticated?.(this.state);
     this.socket.resume();
-  }
-
-  isSslRequest(data: Buffer) {
-    const firstBytes = data.readInt16BE(4);
-    const secondBytes = data.readInt16BE(6);
-
-    return firstBytes === 1234 && secondBytes === 5679;
   }
 
   async createTlsSocketOptions(
@@ -995,73 +1276,73 @@ export default class PostgresConnection {
   }
 
   // https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONSASLCONTINUE
-  async handleSaslInitialResponse() {
-    const saslMechanism = this.reader.cstring();
+  // async handleSaslInitialResponse() {
+  //   const saslMechanism = this.reader.cstring();
 
-    switch (saslMechanism) {
-      case 'SCRAM-SHA-256': {
-        if (this.options.auth.method !== 'scram-sha-256') {
-          throw new Error('Invalid auth method');
-        }
-        const responseLength = this.reader.int32();
-        const clientFirstMessage = this.reader.string(responseLength);
+  //   switch (saslMechanism) {
+  //     case 'SCRAM-SHA-256': {
+  //       if (this.options.auth.method !== 'scram-sha-256') {
+  //         throw new Error('Invalid auth method');
+  //       }
+  //       const responseLength = this.reader.int32();
+  //       const clientFirstMessage = this.reader.string(responseLength);
 
-        this.scramSha256Flow = new ScramSha256Flow({
-          getData: this.options.auth.getScramSha256Data,
-          // biome-ignore lint/style/noNonNullAssertion: <explanation>
-          username: this.clientInfo!.parameters.user,
-          validateCredentials: this.options.auth.validateCredentials,
-        });
+  //       this.scramSha256Flow = new ScramSha256Flow({
+  //         getData: this.options.auth.getScramSha256Data,
+  //         // biome-ignore lint/style/noNonNullAssertion: <explanation>
+  //         username: this.clientInfo!.parameters.user,
+  //         validateCredentials: this.options.auth.validateCredentials,
+  //       });
 
-        const serverFirstMessage =
-          await this.scramSha256Flow.createServerFirstMessage(
-            clientFirstMessage,
-          );
+  //       const serverFirstMessage =
+  //         await this.scramSha256Flow.createServerFirstMessage(
+  //           clientFirstMessage,
+  //         );
 
-        console.log('clientFirstMessage', clientFirstMessage);
-        console.log('serverFirstMessage', serverFirstMessage);
+  //       console.log('clientFirstMessage', clientFirstMessage);
+  //       console.log('serverFirstMessage', serverFirstMessage);
 
-        // biome-ignore lint/style/noNonNullAssertion: <explanation>
-        this.saslFlow!.sendAuthenticationSASLContinue(serverFirstMessage);
-        return;
-      }
-      default:
-        this.sendError({
-          severity: 'FATAL',
-          code: '28000',
-          message: 'Unsupported SASL authentication mechanism',
-        });
-        this.socket.end();
-        return;
-    }
-  }
+  //       // biome-ignore lint/style/noNonNullAssertion: <explanation>
+  //       this.saslFlow!.sendAuthenticationSASLContinue(serverFirstMessage);
+  //       return;
+  //     }
+  //     default:
+  //       this.sendError({
+  //         severity: 'FATAL',
+  //         code: '28000',
+  //         message: 'Unsupported SASL authentication mechanism',
+  //       });
+  //       this.socket.end();
+  //       return;
+  //   }
+  // }
 
   // https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONSASLCONTINUE
-  async handleSaslFinalResponse(clientFinalMessage: string) {
-    if (!this.scramSha256Flow) {
-      throw new Error('No scram-sha-256 flow');
-    }
-    console.log('handleSaslFinalResponse', clientFinalMessage);
-    try {
-      const serverFinalMessage =
-        await this.scramSha256Flow.createServerFinalMessage(clientFinalMessage);
+  // async handleSaslFinalResponse(clientFinalMessage: string) {
+  //   if (!this.scramSha256Flow) {
+  //     throw new Error('No scram-sha-256 flow');
+  //   }
+  //   console.log('handleSaslFinalResponse', clientFinalMessage);
+  //   try {
+  //     const serverFinalMessage =
+  //       await this.scramSha256Flow.createServerFinalMessage(clientFinalMessage);
 
-      // biome-ignore lint/style/noNonNullAssertion: <explanation>
-      this.saslFlow!.sendAuthenticationSASLFinal(serverFinalMessage);
-    } catch (err) {
-      if (err instanceof CreateServerFinalMessageError) {
-        this.sendError({
-          severity: 'FATAL',
-          code: '28000',
-          message: err.message,
-        });
-        this.socket.end();
-        return;
-      }
-      throw err;
-    }
-    await this.completeAuthentication();
-  }
+  //     // biome-ignore lint/style/noNonNullAssertion: <explanation>
+  //     this.saslFlow!.sendAuthenticationSASLFinal(serverFinalMessage);
+  //   } catch (err) {
+  //     if (err instanceof CreateServerFinalMessageError) {
+  //       this.sendError({
+  //         severity: 'FATAL',
+  //         code: '28000',
+  //         message: err.message,
+  //       });
+  //       this.socket.end();
+  //       return;
+  //     }
+  //     throw err;
+  //   }
+  //   await this.completeAuthentication();
+  // }
 }
 
 /**
