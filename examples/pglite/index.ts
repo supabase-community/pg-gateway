@@ -1,7 +1,7 @@
-import { pbkdf2Sync, randomBytes } from 'node:crypto';
 import net from 'node:net';
 import { PGlite } from '@electric-sql/pglite';
 import {
+  type BackendError,
   PostgresConnection,
   createSaslMetadata,
   verifySaslPassword,
@@ -23,10 +23,12 @@ const server = net.createServer((socket) => {
       mode: 'sasl',
       async getMetadata({ username }) {
         if (!metadata) {
+          // helper function to create the metadata for SASL auth
           metadata = createSaslMetadata('postgres');
         }
         return metadata;
       },
+      // can be run internally in pg-gateway, no need to expose that to the user
       async validateCredentials(credentials) {
         const { authMessage, clientProof, metadata } = credentials;
 
@@ -50,10 +52,13 @@ const server = net.createServer((socket) => {
 
       // Forward raw message to PGlite
       try {
-        const [[_, responseData]] = await db.execProtocol(data);
-        connection.sendData(responseData);
+        const [result] = await db.execProtocol(data);
+        if (result) {
+          const [_, responseData] = result;
+          connection.sendData(responseData);
+        }
       } catch (err) {
-        connection.sendError(err);
+        connection.sendError(err as BackendError);
         connection.sendReadyForQuery();
       }
       return true;

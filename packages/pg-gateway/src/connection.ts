@@ -8,11 +8,7 @@ import {
 } from 'node:tls';
 import { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import { Writer } from 'pg-protocol/dist/buffer-writer';
-import {
-  type SaslMetadata,
-  generateMd5Salt,
-  verifySaslPassword,
-} from './util.js';
+import { type SaslMetadata, generateMd5Salt } from './util.js';
 
 export enum FrontendMessageCode {
   Query = 0x51, // Q

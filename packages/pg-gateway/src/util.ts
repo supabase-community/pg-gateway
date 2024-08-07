@@ -97,7 +97,8 @@ export function verifySaslPassword(params: {
     .digest();
   const clientKey = Buffer.alloc(clientProofBuffer.length);
   for (let i = 0; i < clientProofBuffer.length; i++) {
-    clientKey[i] = clientProofBuffer[i] ^ clientSignature[i];
+    // biome-ignore lint/style/noNonNullAssertion: <explanation>
+    clientKey[i] = clientProofBuffer[i]! ^ clientSignature[i]!;
   }
 
   const computedStoredKey = createHash('sha256').update(clientKey).digest();
