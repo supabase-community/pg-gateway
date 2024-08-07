@@ -201,10 +201,10 @@ export const ServerStep = {
   ReadyForQuery: 'ReadyForQuery',
 } as const;
 
-export type ServerStepType = (typeof ServerStep)[keyof typeof ServerStep];
+export type ServerStep = (typeof ServerStep)[keyof typeof ServerStep];
 
 export default class PostgresConnection {
-  private step: ServerStepType = ServerStep.AwaitingInitialMessage;
+  private step: ServerStep = ServerStep.AwaitingInitialMessage;
   options: PostgresConnectionOptions & {
     auth: NonNullable<PostgresConnectionOptions['auth']>;
   };
