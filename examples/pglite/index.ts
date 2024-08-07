@@ -3,18 +3,14 @@ import { PGlite } from '@electric-sql/pglite';
 import {
   type BackendError,
   PostgresConnection,
+  type SaslMetadata,
   createSaslMetadata,
   verifySaslPassword,
 } from 'pg-gateway';
 
 const db = new PGlite();
 
-let metadata: {
-  salt: string;
-  iterations: number;
-  storedKey: string;
-  serverKey: string;
-};
+let metadata: SaslMetadata | undefined;
 
 const server = net.createServer((socket) => {
   const connection = new PostgresConnection(socket, {
