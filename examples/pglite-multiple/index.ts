@@ -31,7 +31,7 @@ const server = net.createServer((socket) => {
   const connection = new PostgresConnection(socket, {
     serverVersion: '16.3 (PGlite 0.2.0)',
     auth: {
-      mode: 'md5Password',
+      method: 'md5',
       async validateCredentials(credentials) {
         const { hash, salt } = credentials;
         const expectedHash = await hashMd5Password(

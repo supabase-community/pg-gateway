@@ -1,9 +1,5 @@
 import type { Socket } from 'node:net';
-import {
-  TLSSocket,
-  type TLSSocketOptions,
-  createSecureContext,
-} from 'node:tls';
+import type { TLSSocket, TLSSocketOptions } from 'node:tls';
 import { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import { Writer } from 'pg-protocol/dist/buffer-writer';
 
@@ -14,6 +10,7 @@ import { generateMd5Salt } from './auth/md5.js';
 import type { PasswordAuthOptions } from './auth/password.js';
 import { ScramSha256AuthFlow } from './auth/sasl/scram-sha-256.js';
 import { MessageBuffer } from './message-buffer.js';
+import { upgradeTls } from './tls.js';
 
 export const FrontendMessageCode = {
   Query: 0x51, // Q
@@ -598,101 +595,29 @@ export default class PostgresConnection {
     this.socket.resume();
   }
 
-  async createTlsSocketOptions(
-    optionsOrCallback: TlsOptions | TlsOptionsCallback,
-    tlsInfo: TlsInfo,
-  ) {
-    const { key, cert, ca, passphrase } =
-      typeof optionsOrCallback === 'function'
-        ? await optionsOrCallback(tlsInfo)
-        : optionsOrCallback;
-
-    const tlsOptions: TLSSocketOptions = {
-      key,
-      cert,
-      ca,
-      passphrase,
-    };
-
-    // If auth method is 'cert' we also need to request a client cert
-    if (this.options.auth.method === 'cert') {
-      tlsOptions.requestCert = true;
-    }
-
-    return tlsOptions;
-  }
-
   /**
    * Upgrades TCP socket connection to TLS.
    */
   async upgradeToTls(options: TlsOptions | TlsOptionsCallback) {
-    this.tlsInfo = {};
+    const requestCert = this.options.auth.method === 'cert';
 
-    const originalSocket = this.socket;
-
-    // Pause the socket to avoid losing any data
-    originalSocket.pause();
-
-    // Remove event handlers on the original socket to avoid reading encrypted data
-    this.removeSocketHandlers(originalSocket);
-
-    const tlsSocketOptions = await this.createTlsSocketOptions(
+    const { secureSocket, tlsInfo } = await upgradeTls(
+      this.socket,
       options,
-      this.tlsInfo,
+      {},
+      requestCert,
     );
 
-    // Create a new TLS socket and pipe the existing TCP socket to it
-    this.secureSocket = new TLSSocket(originalSocket, {
-      ...tlsSocketOptions,
+    this.tlsInfo = tlsInfo;
+    this.secureSocket = secureSocket;
 
-      // This is a server-side TLS socket
-      isServer: true,
-
-      // Record SNI info and re-create TLS options based on it
-      SNICallback: async (sniServerName, callback) => {
-        // biome-ignore lint/style/noNonNullAssertion: <explanation>
-        this.tlsInfo!.sniServerName = sniServerName;
-
-        const tlsSocketOptions = await this.createTlsSocketOptions(
-          options,
-          // biome-ignore lint/style/noNonNullAssertion: <explanation>
-          this.tlsInfo!,
-        );
-
-        callback(null, createSecureContext(tlsSocketOptions));
-      },
-    });
-
-    // Also pause the new secure socket until our own hooks complete
-    this.secureSocket.pause();
-
-    // Wait for TLS negotiations to complete
-    await new Promise<void>((resolve) => {
-      // Since we create a TLSSocket out of band from a typical tls.Server,
-      // we have to manually validate client certs ourselves as done here:
-      // https://github.com/nodejs/node/blob/aeaffbb385c9fc756247e6deaa70be8eb8f59496/lib/_tls_wrap.js#L1248
-      // biome-ignore lint/style/noNonNullAssertion: <explanation>
-      this.secureSocket!.on('secure', () => {
-        onServerSocketSecure.bind(this.secureSocket)();
-        resolve();
-      });
-    });
-
-    // Re-create event handlers for the secure socket
+    this.removeSocketHandlers(this.socket);
     this.createSocketHandlers(this.secureSocket);
-
-    // Replace socket with the secure socket
     this.socket = this.secureSocket;
 
-    // TLS upgrade is complete, call hook
     await this.options.onTlsUpgrade?.(this.state);
 
-    // Pausing the secure socket until `onTlsUpgrade` completes allows the consumer to
-    // asynchronously initialize anything they need before new messages arrive
     this.secureSocket.resume();
-
-    // Resume the TCP socket
-    originalSocket.resume();
   }
 
   /**
@@ -926,24 +851,5 @@ export default class PostgresConnection {
         ? `password authentication failed for user "${this.clientInfo.parameters.user}"`
         : 'password authentication failed',
     });
-  }
-}
-
-/**
- * Internal Node.js handler copied and modified from source to validate client certs.
- * https://github.com/nodejs/node/blob/aeaffbb385c9fc756247e6deaa70be8eb8f59496/lib/_tls_wrap.js#L1185-L1203
- *
- * Without this, `authorized` is always `false` on the TLSSocket and we never know if the client cert is valid.
- */
-
-// biome-ignore lint/suspicious/noExplicitAny: <explanation>
-function onServerSocketSecure(this: TLSSocket & any) {
-  if (this._requestCert) {
-    const verifyError = this._handle.verifyError();
-    if (verifyError) {
-      this.authorizationError = verifyError.code;
-    } else {
-      this.authorized = true;
-    }
   }
 }
