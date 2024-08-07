@@ -8,7 +8,11 @@ import {
 } from 'node:tls';
 import { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import { Writer } from 'pg-protocol/dist/buffer-writer';
-import { generateMd5Salt } from './util.js';
+import {
+  type SaslMetadata,
+  generateMd5Salt,
+  verifySaslPassword,
+} from './util.js';
 
 export enum FrontendMessageCode {
   Query = 0x51, // Q
@@ -116,16 +120,15 @@ export type Md5PasswordAuth = {
 
 export type SaslAuth = {
   mode: 'sasl';
-  validateCredentials: (
-    credentials: {
-      user: string;
-      clientProof: string;
-      salt: string;
-      iterations: number;
-      authMessage: string;
-    },
-    state: State,
-  ) => string | false | Promise<string | false>;
+  validateCredentials: (params: {
+    authMessage: string;
+    clientProof: string;
+    username: string;
+    metadata: SaslMetadata;
+  }) => boolean | Promise<boolean>;
+  getMetadata: (params: {
+    username: string;
+  }) => SaslMetadata | Promise<SaslMetadata>;
 };
 
 export type Auth =
@@ -1072,6 +1075,11 @@ export default class PostgresConnection {
 
   // https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONSASLCONTINUE
   async handleSaslInitialResponse() {
+    // narrow the type of auth to sasl
+    if (this.options.auth.mode !== 'sasl') {
+      throw new Error('Invalid auth mode');
+    }
+
     const saslMechanism = this.reader.cstring();
 
     if (saslMechanism !== 'SCRAM-SHA-256') {
@@ -1099,8 +1107,11 @@ export default class PostgresConnection {
     // Generate server nonce by appending random bytes to client nonce
     const serverNoncePart = randomBytes(18).toString('base64');
     this.sasl.serverNonce = this.sasl.clientNonce + serverNoncePart;
-
-    this.sasl.serverFirstMessage = `r=${this.sasl.serverNonce},s=${this.sasl.salt.toString('base64')},i=${this.sasl.iterations}`;
+    const metadata = await this.options.auth.getMetadata({
+      // biome-ignore lint/style/noNonNullAssertion: <explanation>
+      username: this.clientInfo!.parameters.user,
+    });
+    this.sasl.serverFirstMessage = `r=${this.sasl.serverNonce},s=${metadata.salt},i=${metadata.iterations}`;
 
     this.sendAuthenticationSASLContinue(this.sasl.serverFirstMessage);
   }
@@ -1163,28 +1174,26 @@ export default class PostgresConnection {
     // Construct the full authMessage
     const authMessage = `${this.sasl.clientFirstMessageBare},${this.sasl.serverFirstMessage},${clientFinalMessageWithoutProof}`;
 
+    const metadata = await this.options.auth.getMetadata({ username: user });
+
     // We must pause/resume the socket before/after each hook to prevent race conditions
     this.socket.pause();
-    const saltedPassword = await this.options.auth.validateCredentials(
-      {
-        user,
-        clientProof,
-        salt: this.sasl.salt.toString('base64'),
-        iterations: this.sasl.iterations,
-        authMessage,
-      },
-      this.state,
-    );
+    const isValid = await this.options.auth.validateCredentials({
+      authMessage,
+      clientProof,
+      username: user,
+      metadata,
+    });
     this.socket.resume();
 
-    if (!saltedPassword) {
+    if (!isValid) {
       this.sendAuthenticationFailedError();
       this.socket.end();
       return;
     }
-    //const saltedPassword = pbkdf2Sync("postgres", this.sasl.salt, this.sasl.iterations, 32, 'sha256').toString('base64');
+
     const serverSignature = this.calculateServerSignature(
-      saltedPassword,
+      metadata.serverKey,
       authMessage,
     );
 
@@ -1202,15 +1211,11 @@ export default class PostgresConnection {
     this.sendData(response);
   }
 
-  calculateServerSignature(
-    saltedPassword: string,
-    authMessage: string,
-  ): string {
-    const saltedPasswordBuffer = Buffer.from(saltedPassword, 'base64');
-    const serverKey = createHmac('sha256', saltedPasswordBuffer)
-      .update('Server Key')
-      .digest();
-    const serverSignature = createHmac('sha256', serverKey)
+  calculateServerSignature(serverKey: string, authMessage: string): string {
+    const serverSignature = createHmac(
+      'sha256',
+      Buffer.from(serverKey, 'base64'),
+    )
       .update(authMessage)
       .digest();
     return serverSignature.toString('base64');
