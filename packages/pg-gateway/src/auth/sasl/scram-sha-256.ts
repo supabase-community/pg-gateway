@@ -18,7 +18,7 @@ export type ScramSha256Data = {
   serverKey: string;
 };
 
-export type ScramSha256Auth = {
+export type ScramSha256AuthOptions = {
   method: 'scram-sha-256';
   validateCredentials?: (params: {
     authMessage: string;
@@ -103,8 +103,10 @@ const ScramSha256Step = {
 type ScramSha256Step = (typeof ScramSha256Step)[keyof typeof ScramSha256Step];
 
 export class ScramSha256AuthFlow extends SaslMechanism {
-  auth: ScramSha256Auth & {
-    validateCredentials: NonNullable<ScramSha256Auth['validateCredentials']>;
+  auth: ScramSha256AuthOptions & {
+    validateCredentials: NonNullable<
+      ScramSha256AuthOptions['validateCredentials']
+    >;
   };
   username: string;
   clientFirstMessageBare?: string;
@@ -114,7 +116,7 @@ export class ScramSha256AuthFlow extends SaslMechanism {
   reader: BufferReader;
 
   constructor(params: {
-    auth: ScramSha256Auth;
+    auth: ScramSha256AuthOptions;
     username: string;
     socket: Socket;
     reader: BufferReader;

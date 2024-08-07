@@ -1,6 +1,6 @@
 import type { PeerCertificate } from 'node:tls';
 
-export type CertAuth = {
+export type CertAuthOptions = {
   method: 'cert';
   validateCredentials: (credentials: {
     user: string;

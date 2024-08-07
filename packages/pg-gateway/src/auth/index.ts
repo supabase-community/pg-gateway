@@ -1,12 +1,12 @@
-import type { CertAuth } from './cert';
-import type { Md5Auth } from './md5';
-import type { PasswordAuth } from './password';
-import type { ScramSha256Auth } from './sasl/scram-sha-256';
-import type { TrustAuth } from './trust';
+import type { CertAuthOptions } from './cert';
+import type { Md5AuthOptions } from './md5';
+import type { PasswordAuthOptions } from './password';
+import type { ScramSha256AuthOptions } from './sasl/scram-sha-256';
+import type { TrustAuthOptions } from './trust';
 
-export type Auth =
-  | TrustAuth
-  | PasswordAuth
-  | Md5Auth
-  | ScramSha256Auth
-  | CertAuth;
+export type AuthOptions =
+  | TrustAuthOptions
+  | PasswordAuthOptions
+  | Md5AuthOptions
+  | ScramSha256AuthOptions
+  | CertAuthOptions;

@@ -1,3 +1,3 @@
-export type TrustAuth = {
+export type TrustAuthOptions = {
   method: 'trust';
 };

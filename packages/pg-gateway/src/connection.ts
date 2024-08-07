@@ -7,10 +7,10 @@ import {
 import { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import { Writer } from 'pg-protocol/dist/buffer-writer';
 
-import type { CertAuth } from './auth/cert.js';
-import type { Auth } from './auth/index.js';
-import type { Md5Auth } from './auth/md5.js';
-import type { PasswordAuth } from './auth/password.js';
+import type { CertAuthOptions } from './auth/cert.js';
+import type { AuthOptions } from './auth/index.js';
+import type { Md5AuthOptions } from './auth/md5.js';
+import type { PasswordAuthOptions } from './auth/password.js';
 import { ScramSha256AuthFlow } from './auth/sasl/scram-sha-256.js';
 import { generateMd5Salt } from './util.js';
 
@@ -100,7 +100,7 @@ export type PostgresConnectionOptions = {
   /**
    * The authentication mode for the server.
    */
-  auth?: Auth;
+  auth?: AuthOptions;
 
   /**
    * TLS options for when clients send an SSLRequest.
@@ -505,7 +505,7 @@ export default class PostgresConnection {
 
   async handlePasswordAuthenticationMessage(
     message: Buffer,
-    auth: PasswordAuth,
+    auth: PasswordAuthOptions,
   ) {
     const length = this.reader.int32();
     const password = this.reader.cstring();
@@ -528,7 +528,7 @@ export default class PostgresConnection {
     return true;
   }
 
-  async handleMD5AuthenticationMessage(message: Buffer, auth: Md5Auth) {
+  async handleMD5AuthenticationMessage(message: Buffer, auth: Md5AuthOptions) {
     const length = this.reader.int32();
     const hash = this.reader.cstring();
     const isValid = await auth.validateCredentials({
@@ -547,7 +547,10 @@ export default class PostgresConnection {
     return true;
   }
 
-  async handleCertAuthenticationMessage(message: Buffer, auth: CertAuth) {
+  async handleCertAuthenticationMessage(
+    message: Buffer,
+    auth: CertAuthOptions,
+  ) {
     if (!this.secureSocket) {
       this.sendError({
         severity: 'FATAL',

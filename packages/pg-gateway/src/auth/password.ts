@@ -1,4 +1,4 @@
-export type PasswordAuth = {
+export type PasswordAuthOptions = {
   method: 'password';
   validateCredentials: (credentials: {
     user: string;
