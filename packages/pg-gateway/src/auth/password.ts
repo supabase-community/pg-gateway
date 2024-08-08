@@ -1,6 +1,7 @@
 import type { Socket } from 'node:net';
 import type { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import type { Writer } from 'pg-protocol/dist/buffer-writer';
+import type { ConnectionState } from '../connection.types';
 import { BackendMessageCode } from '../message-codes';
 import { BaseAuthFlow } from './base-auth-flow';
 
@@ -8,14 +9,20 @@ export type StoredPassword = string;
 
 export type PasswordAuthOptions = {
   method: 'password';
-  validateCredentials?: (credentials: {
-    username: string;
-    password: string;
-    storedPassword: StoredPassword;
-  }) => boolean | Promise<boolean>;
-  getStoredPassword: (params: {
-    username: string;
-  }) => StoredPassword | Promise<StoredPassword>;
+  validateCredentials?: (
+    credentials: {
+      username: string;
+      password: string;
+      storedPassword: StoredPassword;
+    },
+    connectionState: ConnectionState,
+  ) => boolean | Promise<boolean>;
+  getStoredPassword: (
+    params: {
+      username: string;
+    },
+    connectionState: ConnectionState,
+  ) => StoredPassword | Promise<StoredPassword>;
 };
 
 export class PasswordAuthFlow extends BaseAuthFlow {
@@ -33,6 +40,7 @@ export class PasswordAuthFlow extends BaseAuthFlow {
     socket: Socket;
     reader: BufferReader;
     writer: Writer;
+    connectionState: ConnectionState;
   }) {
     super(params);
     this.auth = {
@@ -51,14 +59,20 @@ export class PasswordAuthFlow extends BaseAuthFlow {
     const password = this.reader.cstring();
 
     this.socket.pause();
-    const storedPassword = await this.auth.getStoredPassword({
-      username: this.username,
-    });
-    const isValid = await this.auth.validateCredentials({
-      username: this.username,
-      password,
-      storedPassword,
-    });
+    const storedPassword = await this.auth.getStoredPassword(
+      {
+        username: this.username,
+      },
+      this.connectionState,
+    );
+    const isValid = await this.auth.validateCredentials(
+      {
+        username: this.username,
+        password,
+        storedPassword,
+      },
+      this.connectionState,
+    );
     this.socket.resume();
 
     if (!isValid) {

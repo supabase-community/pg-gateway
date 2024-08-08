@@ -9,6 +9,11 @@ import {
   type BackendError,
   createBackendErrorMessage,
 } from './backend-error.js';
+import type {
+  ClientInfo,
+  ConnectionState,
+  TlsInfo,
+} from './connection.types.js';
 import { MessageBuffer } from './message-buffer.js';
 import { BackendMessageCode, FrontendMessageCode } from './message-codes.js';
 import { upgradeTls } from './tls.js';
@@ -48,7 +53,7 @@ export type PostgresConnectionOptions = {
    * This will be called before the startup message is received from the frontend
    * (if TLS is being used) so is a good place to establish proxy connections if desired.
    */
-  onTlsUpgrade?(state: State): void | Promise<void>;
+  onTlsUpgrade?(state: ConnectionState): void | Promise<void>;
 
   /**
    * Callback after the initial startup message has been received from the frontend.
@@ -66,14 +71,14 @@ export type PostgresConnectionOptions = {
    * you bypass further processing by the `PostgresConnection` which means some state
    * may not be collected and hooks won't be called.
    */
-  onStartup?(state: State): boolean | Promise<boolean>;
+  onStartup?(state: ConnectionState): boolean | Promise<boolean>;
 
   /**
    * Callback after a successful authentication has completed.
    *
    * Includes `state` which holds connection information gathered so far.
    */
-  onAuthenticated?(state: State): void | Promise<void>;
+  onAuthenticated?(state: ConnectionState): void | Promise<void>;
 
   /**
    * Callback for every message received from the frontend.
@@ -90,7 +95,10 @@ export type PostgresConnectionOptions = {
    * processing by the `PostgresConnection` which means some state may not be collected
    * and hooks won't be called depending on where the protocol is at in its lifecycle.
    */
-  onMessage?(data: Uint8Array, state: State): boolean | Promise<boolean>;
+  onMessage?(
+    data: Uint8Array,
+    state: ConnectionState,
+  ): boolean | Promise<boolean>;
 
   /**
    * Callback for every frontend query message.
@@ -102,29 +110,10 @@ export type PostgresConnectionOptions = {
    * TODO: change return signature to be more developer-friendly
    * and then translate to wire protocol.
    */
-  onQuery?(query: string, state: State): Uint8Array | Promise<Uint8Array>;
-};
-
-export type ClientParameters = {
-  user: string;
-  [key: string]: string;
-};
-
-export type ClientInfo = {
-  majorVersion: number;
-  minorVersion: number;
-  parameters: ClientParameters;
-};
-
-export type TlsInfo = {
-  sniServerName?: string;
-};
-
-export type State = {
-  hasStarted: boolean;
-  isAuthenticated: boolean;
-  clientInfo?: ClientInfo;
-  tlsInfo?: TlsInfo;
+  onQuery?(
+    query: string,
+    state: ConnectionState,
+  ): Uint8Array | Promise<Uint8Array>;
 };
 
 export const ServerStep = {
@@ -163,7 +152,7 @@ export default class PostgresConnection {
     this.createSocketHandlers(socket);
   }
 
-  get state(): State {
+  get state(): ConnectionState {
     return {
       hasStarted: this.hasStarted,
       isAuthenticated: this.isAuthenticated,
@@ -328,6 +317,7 @@ export default class PostgresConnection {
       writer: this.writer,
       username: this.clientInfo.parameters.user,
       auth: this.options.auth,
+      connectionState: this.state,
     });
 
     this.step = ServerStep.PerformingAuthentication;

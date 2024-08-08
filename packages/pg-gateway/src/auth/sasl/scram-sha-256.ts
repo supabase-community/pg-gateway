@@ -8,6 +8,7 @@ import {
 import type { Socket } from 'node:net';
 import type { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import type { Writer } from 'pg-protocol/dist/buffer-writer';
+import type { ConnectionState } from '../../connection.types';
 import type { AuthFlow } from '../base-auth-flow';
 import { SaslMechanism } from './sasl-mechanism';
 
@@ -20,15 +21,21 @@ export type ScramSha256Data = {
 
 export type ScramSha256AuthOptions = {
   method: 'scram-sha-256';
-  validateCredentials?: (params: {
-    authMessage: string;
-    clientProof: string;
-    username: string;
-    scramSha256Data: ScramSha256Data;
-  }) => boolean | Promise<boolean>;
-  getScramSha256Data: (params: {
-    username: string;
-  }) => ScramSha256Data | Promise<ScramSha256Data>;
+  validateCredentials?: (
+    params: {
+      authMessage: string;
+      clientProof: string;
+      username: string;
+      scramSha256Data: ScramSha256Data;
+    },
+    connectionState: ConnectionState,
+  ) => boolean | Promise<boolean>;
+  getScramSha256Data: (
+    params: {
+      username: string;
+    },
+    connectionState: ConnectionState,
+  ) => ScramSha256Data | Promise<ScramSha256Data>;
 };
 
 /**
@@ -115,6 +122,7 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
   step: ScramSha256Step = ScramSha256Step.Initial;
   reader: BufferReader;
   scramSha256Data?: ScramSha256Data;
+  connectionState: ConnectionState;
 
   constructor(params: {
     auth: ScramSha256AuthOptions;
@@ -122,6 +130,7 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
     socket: Socket;
     reader: BufferReader;
     writer: Writer;
+    connectionState: ConnectionState;
   }) {
     super({
       socket: params.socket,
@@ -141,6 +150,7 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
         }),
     };
     this.reader = params.reader;
+    this.connectionState = params.connectionState;
   }
 
   /**
@@ -149,7 +159,10 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
    */
   async getScramSha256Data(params: { username: string }) {
     if (!this.scramSha256Data) {
-      this.scramSha256Data = await this.auth.getScramSha256Data(params);
+      this.scramSha256Data = await this.auth.getScramSha256Data(
+        params,
+        this.connectionState,
+      );
     }
     return this.scramSha256Data;
   }
@@ -265,12 +278,15 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
       username: this.username,
     });
 
-    const isValid = await this.auth.validateCredentials({
-      authMessage,
-      clientProof,
-      username: this.username,
-      scramSha256Data: data,
-    });
+    const isValid = await this.auth.validateCredentials(
+      {
+        authMessage,
+        clientProof,
+        username: this.username,
+        scramSha256Data: data,
+      },
+      this.connectionState,
+    );
 
     if (!isValid) {
       throw new Error('Invalid credentials');

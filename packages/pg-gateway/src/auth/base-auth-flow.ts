@@ -5,6 +5,7 @@ import {
   type BackendError,
   createBackendErrorMessage,
 } from '../backend-error.js';
+import type { ConnectionState } from '../connection.types.js';
 
 export interface AuthFlow {
   sendInitialAuthMessage(): void;
@@ -16,15 +17,18 @@ export abstract class BaseAuthFlow implements AuthFlow {
   protected socket: Socket;
   protected reader: BufferReader;
   protected writer: Writer;
+  protected connectionState: ConnectionState;
 
   constructor(params: {
     socket: Socket;
     reader: BufferReader;
     writer: Writer;
+    connectionState: ConnectionState;
   }) {
     this.socket = params.socket;
     this.reader = params.reader;
     this.writer = params.writer;
+    this.connectionState = params.connectionState;
   }
 
   abstract sendInitialAuthMessage(): void;

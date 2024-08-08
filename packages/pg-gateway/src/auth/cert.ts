@@ -2,14 +2,18 @@ import type { Socket } from 'node:net';
 import { type PeerCertificate, TLSSocket } from 'node:tls';
 import type { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import type { Writer } from 'pg-protocol/dist/buffer-writer';
+import type { ConnectionState } from '../connection.types';
 import { BaseAuthFlow } from './base-auth-flow';
 
 export type CertAuthOptions = {
   method: 'cert';
-  validateCredentials?: (credentials: {
-    username: string;
-    certificate: PeerCertificate;
-  }) => boolean | Promise<boolean>;
+  validateCredentials?: (
+    credentials: {
+      username: string;
+      certificate: PeerCertificate;
+    },
+    connectionState: ConnectionState,
+  ) => boolean | Promise<boolean>;
 };
 
 export class CertAuthFlow extends BaseAuthFlow {
@@ -25,6 +29,7 @@ export class CertAuthFlow extends BaseAuthFlow {
     socket: Socket;
     reader: BufferReader;
     writer: Writer;
+    connectionState: ConnectionState;
   }) {
     super(params);
     this.auth = {
@@ -60,10 +65,13 @@ export class CertAuthFlow extends BaseAuthFlow {
     }
 
     this.socket.pause();
-    const isValid = await this.auth.validateCredentials({
-      username: this.username,
-      certificate: this.socket.getPeerCertificate(),
-    });
+    const isValid = await this.auth.validateCredentials(
+      {
+        username: this.username,
+        certificate: this.socket.getPeerCertificate(),
+      },
+      this.connectionState,
+    );
     this.socket.resume();
 
     if (!isValid) {

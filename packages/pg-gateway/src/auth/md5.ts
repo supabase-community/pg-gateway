@@ -2,20 +2,25 @@ import { type BinaryLike, createHash } from 'node:crypto';
 import type { Socket } from 'node:net';
 import type { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import type { Writer } from 'pg-protocol/dist/buffer-writer';
+import type { ConnectionState } from '../connection.types';
 import { BackendMessageCode } from '../message-codes';
 import { BaseAuthFlow } from './base-auth-flow';
 
 export type Md5AuthOptions = {
   method: 'md5';
-  validateCredentials?: (credentials: {
-    username: string;
-    preHashedPassword: string;
-    salt: Buffer;
-    hashedPassword: string;
-  }) => boolean | Promise<boolean>;
-  getPreHashedPassword: (credentials: { username: string }) =>
-    | string
-    | Promise<string>;
+  validateCredentials?: (
+    credentials: {
+      username: string;
+      preHashedPassword: string;
+      salt: Buffer;
+      hashedPassword: string;
+    },
+    connectionState: ConnectionState,
+  ) => boolean | Promise<boolean>;
+  getPreHashedPassword: (
+    credentials: { username: string },
+    connectionState: ConnectionState,
+  ) => string | Promise<string>;
 };
 
 export class Md5AuthFlow extends BaseAuthFlow {
@@ -33,6 +38,7 @@ export class Md5AuthFlow extends BaseAuthFlow {
     socket: Socket;
     reader: BufferReader;
     writer: Writer;
+    connectionState: ConnectionState;
   }) {
     super(params);
     this.auth = {
@@ -56,15 +62,21 @@ export class Md5AuthFlow extends BaseAuthFlow {
     const hashedPassword = this.reader.cstring();
 
     this.socket.pause();
-    const preHashedPassword = await this.auth.getPreHashedPassword({
-      username: this.username,
-    });
-    const isValid = await this.auth.validateCredentials({
-      username: this.username,
-      hashedPassword,
-      preHashedPassword,
-      salt: this.salt,
-    });
+    const preHashedPassword = await this.auth.getPreHashedPassword(
+      {
+        username: this.username,
+      },
+      this.connectionState,
+    );
+    const isValid = await this.auth.validateCredentials(
+      {
+        username: this.username,
+        hashedPassword,
+        preHashedPassword,
+        salt: this.salt,
+      },
+      this.connectionState,
+    );
     this.socket.resume();
 
     if (!isValid) {

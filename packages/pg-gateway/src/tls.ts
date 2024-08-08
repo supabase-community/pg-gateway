@@ -4,7 +4,8 @@ import {
   type TLSSocketOptions,
   createSecureContext,
 } from 'node:tls';
-import type { TlsInfo, TlsOptions, TlsOptionsCallback } from './connection';
+import type { TlsOptions, TlsOptionsCallback } from './connection';
+import type { TlsInfo } from './connection.types.js';
 
 export async function upgradeTls(
   socket: Socket,

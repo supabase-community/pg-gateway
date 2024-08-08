@@ -1,6 +1,7 @@
-import type { Socket } from 'net';
+import type { Socket } from 'node:net';
 import type { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import type { Writer } from 'pg-protocol/dist/buffer-writer';
+import type { ConnectionState } from '../connection.types';
 import type { AuthFlow } from './base-auth-flow';
 import { CertAuthFlow, type CertAuthOptions } from './cert';
 import { Md5AuthFlow, type Md5AuthOptions } from './md5';
@@ -24,6 +25,7 @@ export function createAuthFlow(options: {
   writer: Writer;
   auth: AuthOptions;
   username: string;
+  connectionState: ConnectionState;
 }): AuthFlow {
   switch (options.auth.method) {
     case 'password':
