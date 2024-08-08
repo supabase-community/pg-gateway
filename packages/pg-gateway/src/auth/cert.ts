@@ -7,7 +7,7 @@ import { BaseAuthFlow } from './base-auth-flow';
 export type CertAuthOptions = {
   method: 'cert';
   validateCredentials: (credentials: {
-    user: string;
+    username: string;
     certificate: PeerCertificate;
   }) => boolean | Promise<boolean>;
 };
@@ -52,7 +52,7 @@ export class CertAuthFlow extends BaseAuthFlow {
 
     this.socket.pause();
     const isValid = await this.auth.validateCredentials({
-      user: this.username,
+      username: this.username,
       certificate: this.socket.getPeerCertificate(),
     });
     this.socket.resume();

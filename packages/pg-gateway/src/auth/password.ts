@@ -4,16 +4,26 @@ import type { Writer } from 'pg-protocol/dist/buffer-writer';
 import { BackendMessageCode } from '../message-codes';
 import { BaseAuthFlow } from './base-auth-flow';
 
+export type StoredPassword = string;
+
 export type PasswordAuthOptions = {
   method: 'password';
-  validateCredentials: (credentials: {
-    user: string;
+  validateCredentials?: (credentials: {
+    username: string;
     password: string;
+    storedPassword: StoredPassword;
   }) => boolean | Promise<boolean>;
+  getStoredPassword: (params: {
+    username: string;
+  }) => StoredPassword | Promise<StoredPassword>;
 };
 
 export class PasswordAuthFlow extends BaseAuthFlow {
-  private auth: PasswordAuthOptions;
+  private auth: PasswordAuthOptions & {
+    validateCredentials: NonNullable<
+      PasswordAuthOptions['validateCredentials']
+    >;
+  };
   private username: string;
   private completed = false;
 
@@ -25,7 +35,14 @@ export class PasswordAuthFlow extends BaseAuthFlow {
     writer: Writer;
   }) {
     super(params);
-    this.auth = params.auth;
+    this.auth = {
+      ...params.auth,
+      validateCredentials:
+        params.auth.validateCredentials ??
+        (async ({ password, storedPassword }) => {
+          return password === storedPassword;
+        }),
+    };
     this.username = params.username;
   }
 
@@ -34,9 +51,13 @@ export class PasswordAuthFlow extends BaseAuthFlow {
     const password = this.reader.cstring();
 
     this.socket.pause();
+    const storedPassword = await this.auth.getStoredPassword({
+      username: this.username,
+    });
     const isValid = await this.auth.validateCredentials({
-      user: this.username,
+      username: this.username,
       password,
+      storedPassword,
     });
     this.socket.resume();
 

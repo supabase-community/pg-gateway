@@ -9,10 +9,16 @@ const server = net.createServer((socket) => {
     serverVersion: '16.3 (PGlite 0.2.0)',
     auth: {
       method: 'password',
-      async validateCredentials(credentials) {
-        const { password } = credentials;
-        return password === 'postgres';
+      // this is the password stored in the server
+      getStoredPassword(credentials) {
+        return 'postgres';
       },
+      // uncomment to override the default password validation logic
+      // async validateCredentials(credentials) {
+      //   const { storedPassword, password } = credentials;
+      //   // we allow case insensitive password validation
+      //   return password.toUpperCase() === storedPassword.toUpperCase();
+      // },
     },
 
     async onStartup() {

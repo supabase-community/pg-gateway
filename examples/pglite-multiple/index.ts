@@ -5,7 +5,7 @@ import {
   type BackendError,
   PostgresConnection,
   type TlsOptionsCallback,
-  hashMd5Password,
+  createPreHashedPassword,
 } from 'pg-gateway';
 
 const tls: TlsOptionsCallback = async ({ sniServerName }) => {
@@ -32,14 +32,8 @@ const server = net.createServer((socket) => {
     serverVersion: '16.3 (PGlite 0.2.0)',
     auth: {
       method: 'md5',
-      async validateCredentials(credentials) {
-        const { hash, salt } = credentials;
-        const expectedHash = await hashMd5Password(
-          'postgres',
-          'postgres',
-          salt,
-        );
-        return hash === expectedHash;
+      getPreHashedPassword: async ({ username }) => {
+        return createPreHashedPassword(username, 'postgres');
       },
     },
     tls,

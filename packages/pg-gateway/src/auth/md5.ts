@@ -7,15 +7,21 @@ import { BaseAuthFlow } from './base-auth-flow';
 
 export type Md5AuthOptions = {
   method: 'md5';
-  validateCredentials: (credentials: {
-    user: string;
-    hash: string;
+  validateCredentials?: (credentials: {
+    username: string;
+    preHashedPassword: string;
     salt: Buffer;
+    hashedPassword: string;
   }) => boolean | Promise<boolean>;
+  getPreHashedPassword: (credentials: { username: string }) =>
+    | string
+    | Promise<string>;
 };
 
 export class Md5AuthFlow extends BaseAuthFlow {
-  private auth: Md5AuthOptions;
+  private auth: Md5AuthOptions & {
+    validateCredentials: NonNullable<Md5AuthOptions['validateCredentials']>;
+  };
   private username: string;
   private salt: Buffer;
   private completed = false;
@@ -29,19 +35,34 @@ export class Md5AuthFlow extends BaseAuthFlow {
     writer: Writer;
   }) {
     super(params);
-    this.auth = params.auth;
+    this.auth = {
+      ...params.auth,
+      validateCredentials:
+        params.auth.validateCredentials ??
+        (async ({ preHashedPassword, hashedPassword, salt }) => {
+          const expectedHashedPassword = await hashPreHashedPassword(
+            preHashedPassword,
+            salt,
+          );
+          return hashedPassword === expectedHashedPassword;
+        }),
+    };
     this.username = params.username;
     this.salt = params.salt ?? generateMd5Salt();
   }
 
   async handleClientMessage(message: Buffer): Promise<void> {
     const length = this.reader.int32();
-    const md5Password = this.reader.cstring();
+    const hashedPassword = this.reader.cstring();
 
     this.socket.pause();
+    const preHashedPassword = await this.auth.getPreHashedPassword({
+      username: this.username,
+    });
     const isValid = await this.auth.validateCredentials({
-      user: this.username,
-      hash: md5Password,
+      username: this.username,
+      hashedPassword,
+      preHashedPassword,
       salt: this.salt,
     });
     this.socket.resume();
@@ -89,14 +110,12 @@ export class Md5AuthFlow extends BaseAuthFlow {
  *
  * @see https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-START-UP
  */
-export async function hashMd5Password(
-  user: string,
-  password: string,
+export async function hashPreHashedPassword(
+  preHashedPassword: string,
   salt: Buffer,
 ) {
-  const inner = md5(password + user);
-  const outer = md5(Buffer.concat([Buffer.from(inner), salt]));
-  return `md5${outer}`;
+  const hash = md5(Buffer.concat([Buffer.from(preHashedPassword), salt]));
+  return `md5${hash}`;
 }
 
 /**
@@ -113,4 +132,8 @@ export function generateMd5Salt() {
   const salt = Buffer.alloc(4);
   crypto.getRandomValues(salt);
   return salt;
+}
+
+export function createPreHashedPassword(username: string, password: string) {
+  return md5(`${password}${username}`);
 }

@@ -8,10 +8,6 @@ import {
 import type { Socket } from 'node:net';
 import type { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import type { Writer } from 'pg-protocol/dist/buffer-writer';
-import {
-  type BackendError,
-  createBackendErrorMessage,
-} from '../../backend-error';
 import type { AuthFlow } from '../base-auth-flow';
 import { SaslMechanism } from './sasl-mechanism';
 
