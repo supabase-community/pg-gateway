@@ -1,5 +1,9 @@
 import type { Socket } from 'node:net';
 import type { Writer } from 'pg-protocol/dist/buffer-writer';
+import {
+  type BackendError,
+  createBackendErrorMessage,
+} from '../../backend-error.js';
 import { BackendMessageCode } from '../../message-codes.js';
 
 const SaslMessageCode = {
@@ -32,39 +36,6 @@ export class SaslMechanism {
     this.socket.write(response);
   }
 
-  // async handleAuthenticationSASLResponse() {
-  //   const saslMechanism = this.reader.cstring();
-
-  //   switch (saslMechanism) {
-  //     case 'SCRAM-SHA-256': {
-  //       const responseLength = this.reader.int32();
-  //       const clientFirstMessage = this.reader.string(responseLength);
-
-  //       this.scramSha256Flow = new ScramSha256Flow({
-  //         getData: this.getData,
-  //         username: this.username,
-  //         validateCredentials: this.validateCredentials,
-  //       });
-
-  //       const serverFirstMessage =
-  //         await this.scramSha256Flow.createServerFirstMessage(
-  //           clientFirstMessage,
-  //         );
-
-  //       this.sendAuthenticationSASLContinue(serverFirstMessage);
-  //       return;
-  //     }
-  //     default:
-  //       this.sendError({
-  //         severity: 'FATAL',
-  //         code: '28000',
-  //         message: 'Unsupported SASL authentication mechanism',
-  //       });
-  //       this.socket.end();
-  //       return;
-  //   }
-  // }
-
   sendAuthenticationSASLContinue(message: string) {
     this.writer.addInt32(SaslMessageCode.AuthenticationSASLContinue);
     this.writer.addString(message);
@@ -81,5 +52,17 @@ export class SaslMechanism {
       BackendMessageCode.AuthenticationResponse,
     );
     this.socket.write(response);
+  }
+
+  /**
+   * Sends an error message to the frontend.
+   *
+   * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-ERRORRESPONSE
+   *
+   * For error fields, see https://www.postgresql.org/docs/current/protocol-error-fields.html#PROTOCOL-ERROR-FIELDS
+   */
+  sendError(error: BackendError) {
+    const errorMessage = createBackendErrorMessage(error);
+    this.socket.write(errorMessage);
   }
 }

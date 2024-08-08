@@ -1,14 +1,10 @@
 import type { Socket } from 'node:net';
-import type { TLSSocket, TLSSocketOptions } from 'node:tls';
+import type { TLSSocket } from 'node:tls';
 import { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import { Writer } from 'pg-protocol/dist/buffer-writer';
 
-import type { CertAuthOptions } from './auth/cert.js';
-import type { AuthOptions } from './auth/index.js';
-import type { Md5AuthOptions } from './auth/md5.js';
-import { generateMd5Salt } from './auth/md5.js';
-import type { PasswordAuthOptions } from './auth/password.js';
-import { ScramSha256AuthFlow } from './auth/sasl/scram-sha-256.js';
+import type { AuthFlow } from './auth/base-auth-flow.js';
+import { type AuthOptions, createAuthFlow } from './auth/index.js';
 import {
   type BackendError,
   createBackendErrorMessage,
@@ -145,15 +141,14 @@ export default class PostgresConnection {
   options: PostgresConnectionOptions & {
     auth: NonNullable<PostgresConnectionOptions['auth']>;
   };
+  authFlow?: AuthFlow;
   secureSocket?: TLSSocket;
   hasStarted = false;
   isAuthenticated = false;
   writer = new Writer();
   reader = new BufferReader();
-  md5Salt = generateMd5Salt();
   clientInfo?: ClientInfo;
   tlsInfo?: TlsInfo;
-  scramSha256AuthFlow?: ScramSha256AuthFlow;
   messageBuffer = new MessageBuffer();
   boundDataHandler: (data: Buffer) => Promise<void>;
 
@@ -279,12 +274,7 @@ export default class PostgresConnection {
         throw new Error(`Unexpected step: ${this.step}`);
     }
   }
-  sendServerParameters() {
-    throw new Error('Method not implemented.');
-  }
-  sendBackendKeyData() {
-    throw new Error('Method not implemented.');
-  }
+
   async handleSslRequest() {
     if (!this.options.tls) {
       this.writer.addString('N');
@@ -338,152 +328,36 @@ export default class PostgresConnection {
 
     this.hasStarted = true;
 
-    switch (this.options.auth.method) {
-      case 'trust':
-        await this.completeAuthentication();
-        break;
-      case 'password':
-        this.step = ServerStep.PerformingAuthentication;
-        this.sendAuthenticationCleartextPassword();
-        break;
-      case 'md5':
-        this.step = ServerStep.PerformingAuthentication;
-        this.sendAuthenticationMD5Password(this.md5Salt);
-        break;
-      case 'scram-sha-256':
-        this.scramSha256AuthFlow = new ScramSha256AuthFlow({
-          socket: this.socket,
-          reader: this.reader,
-          writer: this.writer,
-          auth: this.options.auth,
-          username: this.clientInfo.parameters.user,
-        });
-        this.step = ServerStep.PerformingAuthentication;
-        this.scramSha256AuthFlow.sendAuthenticationSASL();
-        break;
-      default:
-        throw new Error(
-          `Unsupported authentication method: ${this.options.auth.method}`,
-        );
+    this.authFlow = createAuthFlow({
+      socket: this.socket,
+      reader: this.reader,
+      writer: this.writer,
+      username: this.clientInfo.parameters.user,
+      auth: this.options.auth,
+    });
+
+    if (this.options.auth.method === 'trust') {
+      await this.completeAuthentication();
     }
+
+    this.step = ServerStep.PerformingAuthentication;
+    this.authFlow.sendInitialAuthMessage();
   }
 
   async handleAuthenticationMessage(message: Buffer) {
     const code = this.reader.byte();
+
     if (code !== FrontendMessageCode.Password) {
       throw new Error(`Unexpected authentication message code: ${code}`);
     }
-    switch (this.options.auth.method) {
-      case 'password':
-        return this.handlePasswordAuthenticationMessage(
-          message,
-          this.options.auth,
-        );
-      case 'md5':
-        return this.handleMD5AuthenticationMessage(message, this.options.auth);
-      case 'scram-sha-256':
-        return this.handleScramSha256AuthenticationMessage(message);
-      case 'cert':
-        return this.handleCertAuthenticationMessage(message, this.options.auth);
-      default:
-        throw new Error(
-          `Unsupported authentication method: ${this.options.auth.method}`,
-        );
-    }
-  }
 
-  async handleScramSha256AuthenticationMessage(message: Buffer) {
-    // biome-ignore lint/style/noNonNullAssertion: <explanation>
-    await this.scramSha256AuthFlow!.handleClientMessage(message);
-    // biome-ignore lint/style/noNonNullAssertion: <explanation>
-    return this.scramSha256AuthFlow!.isCompleted;
-  }
-
-  async handlePasswordAuthenticationMessage(
-    message: Buffer,
-    auth: PasswordAuthOptions,
-  ) {
-    const length = this.reader.int32();
-    const password = this.reader.cstring();
-
-    // We must pause/resume the socket before/after each hook to prevent race conditions
-    this.socket.pause();
-    const isValid = await auth.validateCredentials({
-      // biome-ignore lint/style/noNonNullAssertion: <explanation>
-      user: this.clientInfo!.parameters.user,
-      password,
-    });
-    this.socket.resume();
-
-    if (!isValid) {
-      this.sendAuthenticationFailedError();
-      this.socket.end();
-      return;
+    if (!this.authFlow) {
+      throw new Error('AuthFlow not initialized');
     }
 
-    return true;
-  }
+    await this.authFlow.handleClientMessage(message);
 
-  async handleMD5AuthenticationMessage(message: Buffer, auth: Md5AuthOptions) {
-    const length = this.reader.int32();
-    const hash = this.reader.cstring();
-    const isValid = await auth.validateCredentials({
-      // biome-ignore lint/style/noNonNullAssertion: <explanation>
-      user: this.clientInfo!.parameters.user,
-      hash,
-      salt: this.md5Salt,
-    });
-
-    if (!isValid) {
-      this.sendAuthenticationFailedError();
-      this.socket.end();
-      return;
-    }
-
-    return true;
-  }
-
-  async handleCertAuthenticationMessage(
-    message: Buffer,
-    auth: CertAuthOptions,
-  ) {
-    if (!this.secureSocket) {
-      this.sendError({
-        severity: 'FATAL',
-        code: '08000',
-        message: `ssl connection required when auth mode is 'certificate'`,
-      });
-      this.socket.end();
-      return;
-    }
-
-    if (!this.secureSocket.authorized) {
-      this.sendError({
-        severity: 'FATAL',
-        code: '08000',
-        message: 'client certificate is invalid',
-      });
-      this.socket.end();
-      return;
-    }
-
-    const isValid = await auth.validateCredentials({
-      // biome-ignore lint/style/noNonNullAssertion: <explanation>
-      user: this.clientInfo!.parameters.user,
-      certificate: this.secureSocket.getPeerCertificate(),
-    });
-
-    if (!isValid) {
-      this.sendError({
-        severity: 'FATAL',
-        code: '08000',
-        message: 'client certificate is invalid',
-      });
-      this.socket.end();
-      return;
-    }
-
-    return true;
+    return this.authFlow.isCompleted;
   }
 
   private async handleRegularMessage(message: Buffer): Promise<void> {
@@ -626,35 +500,6 @@ export default class PostgresConnection {
    */
   sendData(data: Uint8Array) {
     this.socket.write(data);
-  }
-
-  /**
-   * Sends an "AuthenticationCleartextPassword" message to the frontend.
-   *
-   * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONCLEARTEXTPASSWORD
-   */
-  sendAuthenticationCleartextPassword() {
-    this.writer.addInt32(3);
-    const response = this.writer.flush(
-      BackendMessageCode.AuthenticationResponse,
-    );
-    this.sendData(response);
-  }
-
-  /**
-   * Sends an "AuthenticationMD5Password" message to the frontend.
-   *
-   * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONMD5PASSWORD
-   */
-  sendAuthenticationMD5Password(salt: ArrayBuffer) {
-    this.writer.addInt32(5);
-    this.writer.add(Buffer.from(salt));
-
-    const response = this.writer.flush(
-      BackendMessageCode.AuthenticationResponse,
-    );
-
-    this.sendData(response);
   }
 
   /**

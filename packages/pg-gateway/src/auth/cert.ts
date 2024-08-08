@@ -1,4 +1,8 @@
-import type { PeerCertificate } from 'node:tls';
+import type { Socket } from 'node:net';
+import { type PeerCertificate, TLSSocket } from 'node:tls';
+import type { BufferReader } from 'pg-protocol/dist/buffer-reader';
+import type { Writer } from 'pg-protocol/dist/buffer-writer';
+import { BaseAuthFlow } from './base-auth-flow';
 
 export type CertAuthOptions = {
   method: 'cert';
@@ -7,3 +11,70 @@ export type CertAuthOptions = {
     certificate: PeerCertificate;
   }) => boolean | Promise<boolean>;
 };
+
+export class CertAuthFlow extends BaseAuthFlow {
+  private auth: CertAuthOptions;
+  private username: string;
+  private completed = false;
+
+  constructor(params: {
+    auth: CertAuthOptions;
+    username: string;
+    socket: Socket;
+    reader: BufferReader;
+    writer: Writer;
+  }) {
+    super(params);
+    this.auth = params.auth;
+    this.username = params.username;
+  }
+
+  async handleClientMessage(message: Buffer): Promise<void> {
+    if (!(this.socket instanceof TLSSocket)) {
+      this.sendError({
+        severity: 'FATAL',
+        code: '08000',
+        message: `ssl connection required when auth mode is 'certificate'`,
+      });
+      this.socket.end();
+      return;
+    }
+
+    if (!this.socket.authorized) {
+      this.sendError({
+        severity: 'FATAL',
+        code: '08000',
+        message: 'client certificate is invalid',
+      });
+      this.socket.end();
+      return;
+    }
+
+    this.socket.pause();
+    const isValid = await this.auth.validateCredentials({
+      user: this.username,
+      certificate: this.socket.getPeerCertificate(),
+    });
+    this.socket.resume();
+
+    if (!isValid) {
+      this.sendError({
+        severity: 'FATAL',
+        code: '08000',
+        message: 'client certificate is invalid',
+      });
+      this.socket.end();
+      return;
+    }
+
+    this.completed = true;
+  }
+
+  override sendInitialAuthMessage(): void {
+    return;
+  }
+
+  get isCompleted(): boolean {
+    return this.completed;
+  }
+}

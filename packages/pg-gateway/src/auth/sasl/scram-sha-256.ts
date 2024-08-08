@@ -12,6 +12,7 @@ import {
   type BackendError,
   createBackendErrorMessage,
 } from '../../backend-error';
+import type { AuthFlow } from '../base-auth-flow';
 import { SaslMechanism } from './sasl-mechanism';
 
 export type ScramSha256Data = {
@@ -105,7 +106,7 @@ const ScramSha256Step = {
 
 type ScramSha256Step = (typeof ScramSha256Step)[keyof typeof ScramSha256Step];
 
-export class ScramSha256AuthFlow extends SaslMechanism {
+export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
   auth: ScramSha256AuthOptions & {
     validateCredentials: NonNullable<
       ScramSha256AuthOptions['validateCredentials']
@@ -143,6 +144,10 @@ export class ScramSha256AuthFlow extends SaslMechanism {
         }),
     };
     this.reader = params.reader;
+  }
+
+  sendInitialAuthMessage() {
+    this.sendAuthenticationSASL();
   }
 
   async handleClientMessage(message: Buffer) {
@@ -271,17 +276,5 @@ export class ScramSha256AuthFlow extends SaslMechanism {
       .digest();
 
     return `v=${serverSignature.toString('base64')}`;
-  }
-
-  /**
-   * Sends an error message to the frontend.
-   *
-   * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-ERRORRESPONSE
-   *
-   * For error fields, see https://www.postgresql.org/docs/current/protocol-error-fields.html#PROTOCOL-ERROR-FIELDS
-   */
-  sendError(error: BackendError) {
-    const errorMessage = createBackendErrorMessage(error);
-    this.socket.write(errorMessage);
   }
 }
