@@ -14,11 +14,6 @@ const server = net.createServer((socket) => {
     },
     auth: {
       method: 'cert',
-      async validateCredentials(credentials) {
-        const { certificate, username } = credentials;
-        const clientCN = certificate.subject.CN;
-        return clientCN === username;
-      },
     },
 
     async onStartup() {

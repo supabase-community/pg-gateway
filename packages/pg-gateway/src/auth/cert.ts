@@ -6,14 +6,16 @@ import { BaseAuthFlow } from './base-auth-flow';
 
 export type CertAuthOptions = {
   method: 'cert';
-  validateCredentials: (credentials: {
+  validateCredentials?: (credentials: {
     username: string;
     certificate: PeerCertificate;
   }) => boolean | Promise<boolean>;
 };
 
 export class CertAuthFlow extends BaseAuthFlow {
-  private auth: CertAuthOptions;
+  private auth: CertAuthOptions & {
+    validateCredentials: NonNullable<CertAuthOptions['validateCredentials']>;
+  };
   private username: string;
   private completed = false;
 
@@ -25,7 +27,14 @@ export class CertAuthFlow extends BaseAuthFlow {
     writer: Writer;
   }) {
     super(params);
-    this.auth = params.auth;
+    this.auth = {
+      ...params.auth,
+      validateCredentials:
+        params.auth.validateCredentials ??
+        (async ({ username, certificate }) => {
+          return certificate.subject.CN === username;
+        }),
+    };
     this.username = params.username;
   }
 

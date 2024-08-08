@@ -334,10 +334,12 @@ export default class PostgresConnection {
     this.authFlow.sendInitialAuthMessage();
 
     // 'cert' auth flow is an edge case
-    // it doesn't expect a new message from the client
-    // so we can directly proceed
+    // it doesn't expect a new message from the client so we can directly proceed
     if (this.options.auth.method === 'cert') {
-      this.authFlow.handleClientMessage(message);
+      await this.authFlow.handleClientMessage(message);
+      if (this.authFlow.isCompleted) {
+        await this.completeAuthentication();
+      }
     }
   }
 
