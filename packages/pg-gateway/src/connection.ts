@@ -225,8 +225,7 @@ export default class PostgresConnection {
 
   async handleClientMessage(message: Buffer): Promise<void> {
     this.reader.setBuffer(0, message);
-    console.log('Current step', this.step);
-    console.log('Received message', message.toString('hex'));
+
     this.socket.pause();
     const messageSkip = await this.options.onMessage?.(message, this.state);
     this.socket.resume();
@@ -454,7 +453,6 @@ export default class PostgresConnection {
     await this.options.onTlsUpgrade?.(this.state);
 
     this.secureSocket.resume();
-    console.log('TLS upgrade complete');
   }
 
   /**
