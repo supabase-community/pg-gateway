@@ -1,5 +1,5 @@
 {
-  "name": "pglite-example",
+  "name": "pglite-auth-example",
   "type": "module",
   "scripts": {
     "dev": "tsx index.ts",

@@ -10,7 +10,7 @@ export type Md5AuthOptions = {
   validateCredentials: (credentials: {
     user: string;
     hash: string;
-    salt: Uint8Array;
+    salt: Buffer;
   }) => boolean | Promise<boolean>;
 };
 

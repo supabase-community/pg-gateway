@@ -1,29 +1,16 @@
 import net from 'node:net';
 import { PGlite } from '@electric-sql/pglite';
-import {
-  type BackendError,
-  PostgresConnection,
-  type ScramSha256Data,
-  createScramSha256Data,
-} from 'pg-gateway';
+import { type BackendError, PostgresConnection } from 'pg-gateway';
 
 const db = new PGlite();
-
-let data: ScramSha256Data | undefined;
 
 const server = net.createServer((socket) => {
   const connection = new PostgresConnection(socket, {
     serverVersion: '16.3 (PGlite 0.2.0)',
     auth: {
-      method: 'scram-sha-256',
-      async getScramSha256Data({ username }) {
-        if (!data) {
-          // helper function to create the metadata for SASL auth
-          data = createScramSha256Data('postgres');
-        }
-        return data;
-      },
+      method: 'trust',
     },
+
     async onStartup() {
       // Wait for PGlite to be ready before further processing
       await db.waitReady;
@@ -35,6 +22,7 @@ const server = net.createServer((socket) => {
         return false;
       }
 
+      // Forward raw message to PGlite
       // Forward raw message to PGlite
       try {
         const [result] = await db.execProtocol(data);
@@ -50,7 +38,7 @@ const server = net.createServer((socket) => {
     },
   });
 
-  socket.on('close', () => {
+  socket.on('end', () => {
     console.log('Client disconnected');
   });
 });

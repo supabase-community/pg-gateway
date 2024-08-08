@@ -129,7 +129,6 @@ export type State = {
 
 export const ServerStep = {
   AwaitingInitialMessage: 'AwaitingInitialMessage',
-  HandlingSslRequest: 'HandlingSslRequest',
   PerformingAuthentication: 'PerformingAuthentication',
   ReadyForQuery: 'ReadyForQuery',
 } as const;
@@ -226,7 +225,8 @@ export default class PostgresConnection {
 
   async handleClientMessage(message: Buffer): Promise<void> {
     this.reader.setBuffer(0, message);
-
+    console.log('Current step', this.step);
+    console.log('Received message', message.toString('hex'));
     this.socket.pause();
     const messageSkip = await this.options.onMessage?.(message, this.state);
     this.socket.resume();
@@ -241,22 +241,12 @@ export default class PostgresConnection {
     switch (this.step) {
       case ServerStep.AwaitingInitialMessage:
         if (this.isSslRequest(message)) {
-          this.step = ServerStep.HandlingSslRequest;
           await this.handleSslRequest();
         } else if (this.isStartupMessage(message)) {
           // the next step is determined by handleStartupMessage
-          this.handleStartupMessage();
+          this.handleStartupMessage(message);
         } else {
           throw new Error('Unexpected initial message');
-        }
-        break;
-
-      case ServerStep.HandlingSslRequest:
-        if (this.isStartupMessage(message)) {
-          // the next step is determined by handleStartupMessage
-          this.handleStartupMessage();
-        } else {
-          throw new Error('Expected StartupMessage after SSL negotiation');
         }
         break;
 
@@ -292,7 +282,7 @@ export default class PostgresConnection {
     await this.upgradeToTls(this.options.tls);
   }
 
-  async handleStartupMessage() {
+  async handleStartupMessage(message: Buffer) {
     const { majorVersion, minorVersion, parameters } =
       this.readStartupMessage();
 
@@ -328,6 +318,11 @@ export default class PostgresConnection {
 
     this.hasStarted = true;
 
+    if (this.options.auth.method === 'trust') {
+      await this.completeAuthentication();
+      return;
+    }
+
     this.authFlow = createAuthFlow({
       socket: this.socket,
       reader: this.reader,
@@ -336,12 +331,15 @@ export default class PostgresConnection {
       auth: this.options.auth,
     });
 
-    if (this.options.auth.method === 'trust') {
-      await this.completeAuthentication();
-    }
-
     this.step = ServerStep.PerformingAuthentication;
     this.authFlow.sendInitialAuthMessage();
+
+    // 'cert' auth flow is an edge case
+    // it doesn't expect a new message from the client
+    // so we can directly proceed
+    if (this.options.auth.method === 'cert') {
+      this.authFlow.handleClientMessage(message);
+    }
   }
 
   async handleAuthenticationMessage(message: Buffer) {
@@ -456,6 +454,7 @@ export default class PostgresConnection {
     await this.options.onTlsUpgrade?.(this.state);
 
     this.secureSocket.resume();
+    console.log('TLS upgrade complete');
   }
 
   /**
