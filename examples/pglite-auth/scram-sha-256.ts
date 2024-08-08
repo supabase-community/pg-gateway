@@ -14,6 +14,8 @@ const server = net.createServer((socket) => {
     auth: {
       method: 'scram-sha-256',
       async getScramSha256Data(credentials) {
+        // Utility function to generate scram-sha-256 data (like salt) for the given user
+        // You would likely store this info in a database and retrieve it here
         return createScramSha256Data('postgres');
       },
     },
