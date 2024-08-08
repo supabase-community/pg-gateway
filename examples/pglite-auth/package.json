@@ -2,7 +2,6 @@
   "name": "pglite-auth-example",
   "type": "module",
   "scripts": {
-    "dev": "tsx index.ts",
     "format": "biome format --write .",
     "lint": "biome lint --error-on-warnings .",
     "type-check": "tsc --noEmit"
