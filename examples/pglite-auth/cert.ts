@@ -28,7 +28,6 @@ const server = net.createServer((socket) => {
       }
 
       // Forward raw message to PGlite
-      // Forward raw message to PGlite
       try {
         const [result] = await db.execProtocol(data);
         if (result) {
