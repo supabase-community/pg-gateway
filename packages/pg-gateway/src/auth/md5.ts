@@ -34,7 +34,6 @@ export class Md5AuthFlow extends BaseAuthFlow {
   constructor(params: {
     auth: Md5AuthOptions;
     username: string;
-    salt?: Buffer;
     socket: Socket;
     reader: BufferReader;
     writer: Writer;
@@ -54,7 +53,7 @@ export class Md5AuthFlow extends BaseAuthFlow {
         }),
     };
     this.username = params.username;
-    this.salt = params.salt ?? generateMd5Salt();
+    this.salt = generateMd5Salt();
   }
 
   async handleClientMessage(message: Buffer): Promise<void> {
