@@ -114,6 +114,7 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
   serverNonce?: string;
   step: ScramSha256Step = ScramSha256Step.Initial;
   reader: BufferReader;
+  scramSha256Data?: ScramSha256Data;
 
   constructor(params: {
     auth: ScramSha256AuthOptions;
@@ -140,6 +141,17 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
         }),
     };
     this.reader = params.reader;
+  }
+
+  /**
+   * Get the scram-sha-256 data for the username.
+   * This function is cached to always return the same data as we are generating random values in createScramSha256Data.
+   */
+  async getScramSha256Data(params: { username: string }) {
+    if (!this.scramSha256Data) {
+      this.scramSha256Data = await this.auth.getScramSha256Data(params);
+    }
+    return this.scramSha256Data;
   }
 
   sendInitialAuthMessage() {
@@ -193,7 +205,7 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
     const serverNoncePart = randomBytes(18).toString('base64');
     this.serverNonce = clientNonce + serverNoncePart;
 
-    const { salt, iterations } = await this.auth.getScramSha256Data({
+    const { salt, iterations } = await this.getScramSha256Data({
       username: this.username,
     });
     this.serverFirstMessage = `r=${this.serverNonce},s=${salt},i=${iterations}`;
@@ -249,7 +261,7 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
     // Construct the full authMessage
     const authMessage = `${this.clientFirstMessageBare},${this.serverFirstMessage},${clientFinalMessageWithoutProof}`;
 
-    const data = await this.auth.getScramSha256Data({
+    const data = await this.getScramSha256Data({
       username: this.username,
     });
 

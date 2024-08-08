@@ -1,32 +1,20 @@
-import * as fs from 'node:fs';
 import net from 'node:net';
 import { PGlite } from '@electric-sql/pglite';
 import {
   type BackendError,
   PostgresConnection,
-  type ScramSha256Data,
   createScramSha256Data,
 } from 'pg-gateway';
 
 const db = new PGlite();
 
-let data: ScramSha256Data | undefined;
-
 const server = net.createServer((socket) => {
   const connection = new PostgresConnection(socket, {
     serverVersion: '16.3 (PGlite 0.2.0)',
-    tls: {
-      key: fs.readFileSync('key.pem'),
-      cert: fs.readFileSync('cert.pem'),
-    },
     auth: {
       method: 'scram-sha-256',
-      async getScramSha256Data({ username }) {
-        if (!data) {
-          // helper function to create the metadata for SASL auth
-          data = createScramSha256Data('postgres');
-        }
-        return data;
+      async getScramSha256Data(credentials) {
+        return createScramSha256Data('postgres');
       },
     },
     async onTlsUpgrade({ tlsInfo }) {
