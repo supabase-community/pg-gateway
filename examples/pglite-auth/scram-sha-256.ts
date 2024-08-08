@@ -19,9 +19,6 @@ const server = net.createServer((socket) => {
         return createScramSha256Data('postgres');
       },
     },
-    async onTlsUpgrade({ tlsInfo }) {
-      console.log(tlsInfo);
-    },
     async onStartup() {
       // Wait for PGlite to be ready before further processing
       await db.waitReady;
