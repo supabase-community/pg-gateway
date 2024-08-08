@@ -1,11 +1,11 @@
 import type { Socket } from 'node:net';
-import type { BufferReader } from 'pg-protocol/dist/buffer-reader';
-import type { Writer } from 'pg-protocol/dist/buffer-writer';
+import type { BufferReader } from 'pg-protocol/dist/buffer-reader.js';
+import type { Writer } from 'pg-protocol/dist/buffer-writer.js';
 import type { ConnectionState } from '../connection.types';
 import { BackendMessageCode } from '../message-codes';
 import { BaseAuthFlow } from './base-auth-flow';
 
-export type StoredPassword = string;
+export type ClearTextPassword = string;
 
 export type PasswordAuthOptions = {
   method: 'password';
@@ -13,16 +13,16 @@ export type PasswordAuthOptions = {
     credentials: {
       username: string;
       password: string;
-      storedPassword: StoredPassword;
+      clearTextPassword: ClearTextPassword;
     },
     connectionState: ConnectionState,
   ) => boolean | Promise<boolean>;
-  getStoredPassword: (
+  getClearTextPassword: (
     params: {
       username: string;
     },
     connectionState: ConnectionState,
-  ) => StoredPassword | Promise<StoredPassword>;
+  ) => ClearTextPassword | Promise<ClearTextPassword>;
 };
 
 export class PasswordAuthFlow extends BaseAuthFlow {
@@ -47,8 +47,8 @@ export class PasswordAuthFlow extends BaseAuthFlow {
       ...params.auth,
       validateCredentials:
         params.auth.validateCredentials ??
-        (async ({ password, storedPassword }) => {
-          return password === storedPassword;
+        (async ({ password, clearTextPassword }) => {
+          return password === clearTextPassword;
         }),
     };
     this.username = params.username;
@@ -59,7 +59,7 @@ export class PasswordAuthFlow extends BaseAuthFlow {
     const password = this.reader.cstring();
 
     this.socket.pause();
-    const storedPassword = await this.auth.getStoredPassword(
+    const clearTextPassword = await this.auth.getClearTextPassword(
       {
         username: this.username,
       },
@@ -69,7 +69,7 @@ export class PasswordAuthFlow extends BaseAuthFlow {
       {
         username: this.username,
         password,
-        storedPassword,
+        clearTextPassword,
       },
       this.connectionState,
     );

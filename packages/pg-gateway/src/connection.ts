@@ -1,7 +1,7 @@
 import type { Socket } from 'node:net';
 import type { TLSSocket } from 'node:tls';
-import { BufferReader } from 'pg-protocol/dist/buffer-reader';
-import { Writer } from 'pg-protocol/dist/buffer-writer';
+import { BufferReader } from 'pg-protocol/dist/buffer-reader.js';
+import { Writer } from 'pg-protocol/dist/buffer-writer.js';
 
 import type { AuthFlow } from './auth/base-auth-flow.js';
 import { type AuthOptions, createAuthFlow } from './auth/index.js';

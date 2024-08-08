@@ -1,4 +1,4 @@
-import { Writer } from 'pg-protocol/dist/buffer-writer';
+import { Writer } from 'pg-protocol/dist/buffer-writer.js';
 import { BackendMessageCode } from './message-codes.js';
 
 export interface BackendError {

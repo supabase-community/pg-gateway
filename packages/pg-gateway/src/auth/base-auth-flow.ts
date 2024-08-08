@@ -1,6 +1,6 @@
 import type { Socket } from 'node:net';
-import type { BufferReader } from 'pg-protocol/dist/buffer-reader';
-import type { Writer } from 'pg-protocol/dist/buffer-writer';
+import type { BufferReader } from 'pg-protocol/dist/buffer-reader.js';
+import type { Writer } from 'pg-protocol/dist/buffer-writer.js';
 import {
   type BackendError,
   createBackendErrorMessage,
