@@ -12,7 +12,7 @@ const client = new Socket();
 let saslSession: Session;
 const parser = new Parser();
 
-client.connect(2345, 'localhost', () => {
+client.connect(5432, 'localhost', () => {
   const data = serialize.startup({ user: 'postgres' });
   client.write(data);
 });

@@ -63,6 +63,6 @@ const server = net.createServer((socket) => {
   });
 });
 
-server.listen(2345, () => {
+server.listen(5432, () => {
   console.log('Server listening on port 5432');
 });
