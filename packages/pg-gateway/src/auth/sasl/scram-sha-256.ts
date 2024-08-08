@@ -159,10 +159,12 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
    */
   async getScramSha256Data(params: { username: string }) {
     if (!this.scramSha256Data) {
+      this.socket.pause();
       this.scramSha256Data = await this.auth.getScramSha256Data(
         params,
         this.connectionState,
       );
+      this.socket.resume();
     }
     return this.scramSha256Data;
   }
@@ -278,6 +280,7 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
       username: this.username,
     });
 
+    this.socket.pause();
     const isValid = await this.auth.validateCredentials(
       {
         authMessage,
@@ -287,6 +290,7 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
       },
       this.connectionState,
     );
+    this.socket.resume();
 
     if (!isValid) {
       throw new Error('Invalid credentials');
