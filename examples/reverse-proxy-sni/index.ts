@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
-import net, { connect, Socket } from 'node:net';
-import { PostgresConnection, TlsOptionsCallback } from '../../src';
+import net, { connect } from 'node:net';
+import { PostgresConnection, type TlsOptionsCallback } from 'pg-gateway';
 
 const tls: TlsOptionsCallback = async ({ sniServerName }) => {
   // Optionally serve different certs based on `sniServerName`
@@ -31,7 +31,7 @@ const server = net.createServer((socket) => {
         connection.sendError({
           severity: 'FATAL',
           code: '08000',
-          message: `ssl connection required`,
+          message: 'ssl connection required',
         });
         connection.socket.end();
         return;
@@ -41,7 +41,7 @@ const server = net.createServer((socket) => {
         connection.sendError({
           severity: 'FATAL',
           code: '08000',
-          message: `ssl sni extension required`,
+          message: 'ssl sni extension required',
         });
         connection.socket.end();
         return;
@@ -50,6 +50,16 @@ const server = net.createServer((socket) => {
       // In this example the left-most subdomain contains the server ID
       // ie. 12345.db.example.com -> 12345
       const [serverId] = tlsInfo.sniServerName.split('.');
+
+      if (!serverId) {
+        connection.sendError({
+          severity: 'FATAL',
+          code: '08000',
+          message: 'server id required',
+        });
+        connection.socket.end();
+        return;
+      }
 
       // Lookup the server host/port based on ID
       const serverInfo = await getServerById(serverId);

@@ -1,24 +1,23 @@
-import { PGlite } from '@electric-sql/pglite';
 import net from 'node:net';
-import { PostgresConnection, hashMd5Password } from 'pg-gateway';
+import { PGlite } from '@electric-sql/pglite';
+import {
+  type BackendError,
+  PostgresConnection,
+  createScramSha256Data,
+} from 'pg-gateway';
 
 const db = new PGlite();
 
 const server = net.createServer((socket) => {
   const connection = new PostgresConnection(socket, {
     serverVersion: '16.3 (PGlite 0.2.0)',
-    authMode: 'md5Password',
-    async validateCredentials(credentials) {
-      if (credentials.authMode === 'md5Password') {
-        const { hash, salt } = credentials;
-        const expectedHash = await hashMd5Password(
-          'postgres',
-          'postgres',
-          salt
-        );
-        return hash === expectedHash;
-      }
-      return false;
+    auth: {
+      method: 'scram-sha-256',
+      async getScramSha256Data(credentials) {
+        // Utility function to generate scram-sha-256 data (like salt) for the given user
+        // You would likely store this info in a database and retrieve it here
+        return createScramSha256Data('postgres');
+      },
     },
     async onStartup() {
       // Wait for PGlite to be ready before further processing
@@ -33,17 +32,20 @@ const server = net.createServer((socket) => {
 
       // Forward raw message to PGlite
       try {
-        const [[_, responseData]] = await db.execProtocol(data);
-        connection.sendData(responseData);
+        const [result] = await db.execProtocol(data);
+        if (result) {
+          const [_, responseData] = result;
+          connection.sendData(responseData);
+        }
       } catch (err) {
-        connection.sendError(err);
+        connection.sendError(err as BackendError);
         connection.sendReadyForQuery();
       }
       return true;
     },
   });
 
-  socket.on('end', () => {
+  socket.on('close', () => {
     console.log('Client disconnected');
   });
 });

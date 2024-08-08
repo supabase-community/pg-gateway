@@ -1,10 +1,11 @@
-import { PGlite, PGliteInterface } from '@electric-sql/pglite';
 import { mkdir, readFile } from 'node:fs/promises';
 import net from 'node:net';
+import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 import {
+  type BackendError,
   PostgresConnection,
-  TlsOptionsCallback,
-  hashMd5Password,
+  type TlsOptionsCallback,
+  createPreHashedPassword,
 } from 'pg-gateway';
 
 const tls: TlsOptionsCallback = async ({ sniServerName }) => {
@@ -29,26 +30,19 @@ const server = net.createServer((socket) => {
 
   const connection = new PostgresConnection(socket, {
     serverVersion: '16.3 (PGlite 0.2.0)',
-    authMode: 'md5Password',
-    tls,
-    async validateCredentials(credentials) {
-      if (credentials.authMode === 'md5Password') {
-        const { hash, salt } = credentials;
-        const expectedHash = await hashMd5Password(
-          'postgres',
-          'postgres',
-          salt
-        );
-        return hash === expectedHash;
-      }
-      return false;
+    auth: {
+      method: 'md5',
+      getPreHashedPassword: async ({ username }) => {
+        return createPreHashedPassword(username, 'postgres');
+      },
     },
+    tls,
     async onTlsUpgrade({ tlsInfo }) {
       if (!tlsInfo) {
         connection.sendError({
           severity: 'FATAL',
           code: '08000',
-          message: `ssl connection required`,
+          message: 'ssl connection required',
         });
         connection.socket.end();
         return;
@@ -58,7 +52,7 @@ const server = net.createServer((socket) => {
         connection.sendError({
           severity: 'FATAL',
           code: '08000',
-          message: `ssl sni extension required`,
+          message: 'ssl sni extension required',
         });
         connection.socket.end();
         return;
@@ -81,10 +75,13 @@ const server = net.createServer((socket) => {
 
       // Forward raw message to PGlite
       try {
-        const [[_, responseData]] = await db.execProtocol(data);
-        connection.sendData(responseData);
+        const [result] = await db.execProtocol(data);
+        if (result) {
+          const [_, responseData] = result;
+          connection.sendData(responseData);
+        }
       } catch (err) {
-        connection.sendError(err);
+        connection.sendError(err as BackendError);
         connection.sendReadyForQuery();
       }
       return true;

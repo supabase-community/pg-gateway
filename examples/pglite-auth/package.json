@@ -1,8 +1,7 @@
 {
-  "name": "reverse-proxy-sni-example",
+  "name": "pglite-auth-example",
   "type": "module",
   "scripts": {
-    "dev": "tsx index.ts",
     "format": "biome format --write .",
     "lint": "biome lint --error-on-warnings .",
     "type-check": "tsc --noEmit"
@@ -12,6 +11,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "1.8.3",
+    "@electric-sql/pglite": "0.2.0-alpha.7",
     "@total-typescript/tsconfig": "^1.0.4",
     "@types/node": "^20.14.11",
     "tsx": "^4.16.2",
