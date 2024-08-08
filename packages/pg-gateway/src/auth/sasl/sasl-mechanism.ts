@@ -1,6 +1,6 @@
 import type { Socket } from 'node:net';
 import type { Writer } from 'pg-protocol/dist/buffer-writer';
-import { BackendMessageCode } from '../../connection';
+import { BackendMessageCode } from '../../message-codes.js';
 
 const SaslMessageCode = {
   AuthenticationSASL: 10,

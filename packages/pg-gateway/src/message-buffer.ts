@@ -1,8 +1,16 @@
+/**
+ * Handles buffering of messages for a connection
+ */
 export class MessageBuffer {
   private buffer: Buffer = Buffer.alloc(0);
   private bufferLength = 0;
   private bufferOffset = 0;
 
+  /**
+   * Merges a new buffer into the existing buffer
+   *
+   * @see https://github.com/brianc/node-postgres/blob/54eb0fa216aaccd727765641e7d1cf5da2bc483d/packages/pg-protocol/src/parser.ts#L121-L152
+   */
   mergeBuffer(newData: Buffer): void {
     if (this.bufferLength > 0) {
       const newLength = this.bufferLength + newData.byteLength;
@@ -40,6 +48,11 @@ export class MessageBuffer {
     }
   }
 
+  /**
+   * Processes incoming data by buffering it and parsing messages.
+   *
+   * @see https://github.com/brianc/node-postgres/blob/54eb0fa216aaccd727765641e7d1cf5da2bc483d/packages/pg-protocol/src/parser.ts#L91-L119
+   */
   async processMessages(
     messageHandler: (message: Buffer) => Promise<void>,
     hasStarted: boolean,

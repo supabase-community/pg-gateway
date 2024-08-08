@@ -8,7 +8,10 @@ import {
 import type { Socket } from 'node:net';
 import type { BufferReader } from 'pg-protocol/dist/buffer-reader';
 import type { Writer } from 'pg-protocol/dist/buffer-writer';
-import { type BackendError, BackendMessageCode } from '../../connection';
+import {
+  type BackendError,
+  createBackendErrorMessage,
+} from '../../backend-error';
 import { SaslMechanism } from './sasl-mechanism';
 
 export type ScramSha256Data = {
@@ -278,93 +281,7 @@ export class ScramSha256AuthFlow extends SaslMechanism {
    * For error fields, see https://www.postgresql.org/docs/current/protocol-error-fields.html#PROTOCOL-ERROR-FIELDS
    */
   sendError(error: BackendError) {
-    this.writer.addString('S');
-    this.writer.addCString(error.severity);
-
-    this.writer.addString('V');
-    this.writer.addCString(error.severity);
-
-    this.writer.addString('C');
-    this.writer.addCString(error.code);
-
-    this.writer.addString('M');
-    this.writer.addCString(error.message);
-
-    if (error.detail !== undefined) {
-      this.writer.addString('D');
-      this.writer.addCString(error.detail);
-    }
-
-    if (error.hint !== undefined) {
-      this.writer.addString('H');
-      this.writer.addCString(error.hint);
-    }
-
-    if (error.position !== undefined) {
-      this.writer.addString('P');
-      this.writer.addCString(error.position);
-    }
-
-    if (error.internalPosition !== undefined) {
-      this.writer.addString('p');
-      this.writer.addCString(error.internalPosition);
-    }
-
-    if (error.internalQuery !== undefined) {
-      this.writer.addString('q');
-      this.writer.addCString(error.internalQuery);
-    }
-
-    if (error.where !== undefined) {
-      this.writer.addString('W');
-      this.writer.addCString(error.where);
-    }
-
-    if (error.schema !== undefined) {
-      this.writer.addString('s');
-      this.writer.addCString(error.schema);
-    }
-
-    if (error.table !== undefined) {
-      this.writer.addString('t');
-      this.writer.addCString(error.table);
-    }
-
-    if (error.column !== undefined) {
-      this.writer.addString('c');
-      this.writer.addCString(error.column);
-    }
-
-    if (error.dataType !== undefined) {
-      this.writer.addString('d');
-      this.writer.addCString(error.dataType);
-    }
-
-    if (error.constraint !== undefined) {
-      this.writer.addString('n');
-      this.writer.addCString(error.constraint);
-    }
-
-    if (error.file !== undefined) {
-      this.writer.addString('F');
-      this.writer.addCString(error.file);
-    }
-
-    if (error.line !== undefined) {
-      this.writer.addString('L');
-      this.writer.addCString(error.line);
-    }
-
-    if (error.routine !== undefined) {
-      this.writer.addString('R');
-      this.writer.addCString(error.routine);
-    }
-
-    // Add null byte to the end
-    this.writer.addCString('');
-
-    const response = this.writer.flush(BackendMessageCode.ErrorMessage);
-
-    this.socket.write(response);
+    const errorMessage = createBackendErrorMessage(error);
+    this.socket.write(errorMessage);
   }
 }

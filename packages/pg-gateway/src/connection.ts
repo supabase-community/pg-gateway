@@ -9,74 +9,13 @@ import type { Md5AuthOptions } from './auth/md5.js';
 import { generateMd5Salt } from './auth/md5.js';
 import type { PasswordAuthOptions } from './auth/password.js';
 import { ScramSha256AuthFlow } from './auth/sasl/scram-sha-256.js';
+import {
+  type BackendError,
+  createBackendErrorMessage,
+} from './backend-error.js';
 import { MessageBuffer } from './message-buffer.js';
+import { BackendMessageCode, FrontendMessageCode } from './message-codes.js';
 import { upgradeTls } from './tls.js';
-
-export const FrontendMessageCode = {
-  Query: 0x51, // Q
-  Parse: 0x50, // P
-  Bind: 0x42, // B
-  Execute: 0x45, // E
-  FunctionCall: 0x46, // F
-  Flush: 0x48, // H
-  Close: 0x43, // C
-  Describe: 0x44, // D
-  CopyFromChunk: 0x64, // d
-  CopyDone: 0x63, // c
-  CopyData: 0x64, // d
-  CopyFail: 0x66, // f
-  Password: 0x70, // p
-  Sync: 0x53, // S
-  Terminate: 0x58, // X
-} as const;
-
-export const BackendMessageCode = {
-  DataRow: 0x44, // D
-  ParseComplete: 0x31, // 1
-  BindComplete: 0x32, // 2
-  CloseComplete: 0x33, // 3
-  CommandComplete: 0x43, // C
-  ReadyForQuery: 0x5a, // Z
-  NoData: 0x6e, // n
-  NotificationResponse: 0x41, // A
-  AuthenticationResponse: 0x52, // R
-  ParameterStatus: 0x53, // S
-  BackendKeyData: 0x4b, // K
-  ErrorMessage: 0x45, // E
-  NoticeMessage: 0x4e, // N
-  RowDescriptionMessage: 0x54, // T
-  ParameterDescriptionMessage: 0x74, // t
-  PortalSuspended: 0x73, // s
-  ReplicationStart: 0x57, // W
-  EmptyQuery: 0x49, // I
-  CopyIn: 0x47, // G
-  CopyOut: 0x48, // H
-  CopyDone: 0x63, // c
-  CopyData: 0x64, // d
-} as const;
-
-/**
- * Modified from pg-protocol to require certain fields.
- */
-export interface BackendError {
-  severity: 'ERROR' | 'FATAL' | 'PANIC';
-  code: string;
-  message: string;
-  detail?: string;
-  hint?: string;
-  position?: string;
-  internalPosition?: string;
-  internalQuery?: string;
-  where?: string;
-  schema?: string;
-  table?: string;
-  column?: string;
-  dataType?: string;
-  constraint?: string;
-  file?: string;
-  line?: string;
-  routine?: string;
-}
 
 export type TlsOptions = {
   key: Buffer;
@@ -298,6 +237,9 @@ export default class PostgresConnection {
     this.socket.resume();
 
     if (messageSkip) {
+      if (this.isStartupMessage(message)) {
+        this.hasStarted = true;
+      }
       return;
     }
 
@@ -565,13 +507,35 @@ export default class PostgresConnection {
     this.socket.end();
   }
 
+  /**
+   * Checks if the given message is a valid SSL request.
+   *
+   * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-SSLREQUEST
+   */
   private isSslRequest(message: Buffer): boolean {
-    return message.length === 8 && message.readInt32BE(4) === 80877103;
+    if (message.length !== 8) return false;
+
+    const mostSignificantPart = message.readInt16BE(4);
+    const leastSignificantPart = message.readInt16BE(6);
+
+    return mostSignificantPart === 1234 && leastSignificantPart === 5679;
   }
 
+  /**
+   * Checks if the given message is a valid StartupMessage.
+   *
+   * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-STARTUPMESSAGE
+   */
   private isStartupMessage(message: Buffer): boolean {
-    // StartupMessage begins with length (Int32) followed by protocol version (Int32)
-    return message.length > 8 && message.readInt32BE(4) === 196608; // 196608 is protocol version 3.0
+    if (message.length < 8) return false;
+
+    const length = message.readInt32BE(0);
+    const majorVersion = message.readInt16BE(4);
+    const minorVersion = message.readInt16BE(6);
+
+    return (
+      message.length === length && majorVersion === 3 && minorVersion === 0
+    );
   }
 
   /**
@@ -754,93 +718,8 @@ export default class PostgresConnection {
    * For error fields, see https://www.postgresql.org/docs/current/protocol-error-fields.html#PROTOCOL-ERROR-FIELDS
    */
   sendError(error: BackendError) {
-    this.writer.addString('S');
-    this.writer.addCString(error.severity);
-
-    this.writer.addString('V');
-    this.writer.addCString(error.severity);
-
-    this.writer.addString('C');
-    this.writer.addCString(error.code);
-
-    this.writer.addString('M');
-    this.writer.addCString(error.message);
-
-    if (error.detail !== undefined) {
-      this.writer.addString('D');
-      this.writer.addCString(error.detail);
-    }
-
-    if (error.hint !== undefined) {
-      this.writer.addString('H');
-      this.writer.addCString(error.hint);
-    }
-
-    if (error.position !== undefined) {
-      this.writer.addString('P');
-      this.writer.addCString(error.position);
-    }
-
-    if (error.internalPosition !== undefined) {
-      this.writer.addString('p');
-      this.writer.addCString(error.internalPosition);
-    }
-
-    if (error.internalQuery !== undefined) {
-      this.writer.addString('q');
-      this.writer.addCString(error.internalQuery);
-    }
-
-    if (error.where !== undefined) {
-      this.writer.addString('W');
-      this.writer.addCString(error.where);
-    }
-
-    if (error.schema !== undefined) {
-      this.writer.addString('s');
-      this.writer.addCString(error.schema);
-    }
-
-    if (error.table !== undefined) {
-      this.writer.addString('t');
-      this.writer.addCString(error.table);
-    }
-
-    if (error.column !== undefined) {
-      this.writer.addString('c');
-      this.writer.addCString(error.column);
-    }
-
-    if (error.dataType !== undefined) {
-      this.writer.addString('d');
-      this.writer.addCString(error.dataType);
-    }
-
-    if (error.constraint !== undefined) {
-      this.writer.addString('n');
-      this.writer.addCString(error.constraint);
-    }
-
-    if (error.file !== undefined) {
-      this.writer.addString('F');
-      this.writer.addCString(error.file);
-    }
-
-    if (error.line !== undefined) {
-      this.writer.addString('L');
-      this.writer.addCString(error.line);
-    }
-
-    if (error.routine !== undefined) {
-      this.writer.addString('R');
-      this.writer.addCString(error.routine);
-    }
-
-    // Add null byte to the end
-    this.writer.addCString('');
-
-    const response = this.writer.flush(BackendMessageCode.ErrorMessage);
-    this.sendData(response);
+    const errorMessage = createBackendErrorMessage(error);
+    this.sendData(errorMessage);
   }
 
   sendAuthenticationFailedError() {
