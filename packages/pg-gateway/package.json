@@ -1,6 +1,6 @@
 {
   "name": "pg-gateway",
-  "version": "0.3.0-alpha.2",
+  "version": "0.3.0-alpha.3",
   "description": "Postgres wire protocol for the server-side",
   "license": "MIT",
   "type": "module",
