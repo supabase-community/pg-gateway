@@ -1,7 +1,7 @@
 import { type BinaryLike, createHash } from 'node:crypto';
 import type { Socket } from 'node:net';
-import type { BufferReader } from 'pg-protocol/dist/buffer-reader.js';
-import type { Writer } from 'pg-protocol/dist/buffer-writer.js';
+import type { BufferReader } from '../buffer-reader.js';
+import type { BufferWriter } from '../buffer-writer.js';
 import type { ConnectionState } from '../connection.types';
 import { BackendMessageCode } from '../message-codes';
 import { BaseAuthFlow } from './base-auth-flow';
@@ -36,7 +36,7 @@ export class Md5AuthFlow extends BaseAuthFlow {
     username: string;
     socket: Socket;
     reader: BufferReader;
-    writer: Writer;
+    writer: BufferWriter;
     connectionState: ConnectionState;
   }) {
     super(params);

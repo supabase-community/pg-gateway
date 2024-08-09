@@ -1,7 +1,7 @@
 import type { Socket } from 'node:net';
 import type { TLSSocket } from 'node:tls';
-import { BufferReader } from 'pg-protocol/dist/buffer-reader.js';
-import { Writer } from 'pg-protocol/dist/buffer-writer.js';
+import { BufferReader } from './buffer-reader.js';
+import { BufferWriter } from './buffer-writer.js';
 
 import type { AuthFlow } from './auth/base-auth-flow.js';
 import { type AuthOptions, createAuthFlow } from './auth/index.js';
@@ -133,7 +133,7 @@ export default class PostgresConnection {
   secureSocket?: TLSSocket;
   hasStarted = false;
   isAuthenticated = false;
-  writer = new Writer();
+  writer = new BufferWriter();
   reader = new BufferReader();
   clientInfo?: ClientInfo;
   tlsInfo?: TlsInfo;
