@@ -6,9 +6,7 @@
   "type": "module",
   "main": "dist/index.cjs",
   "types": "dist/index.d.ts",
-  "files": [
-    "dist/**/*"
-  ],
+  "files": ["dist/**/*"],
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -28,7 +26,6 @@
   },
   "devDependencies": {
     "@biomejs/biome": "1.8.3",
-    "@electric-sql/pglite": "0.2.0-alpha.7",
     "@total-typescript/tsconfig": "^1.0.4",
     "@types/node": "^20.14.11",
     "pg": "^8.12.0",
