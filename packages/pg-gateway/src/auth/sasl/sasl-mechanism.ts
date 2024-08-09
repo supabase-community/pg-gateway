@@ -1,9 +1,9 @@
 import type { Socket } from 'node:net';
-import type { Writer } from 'pg-protocol/dist/buffer-writer.js';
 import {
   type BackendError,
   createBackendErrorMessage,
 } from '../../backend-error.js';
+import type { BufferWriter } from '../../buffer-writer.js';
 import { BackendMessageCode } from '../../message-codes.js';
 
 const SaslMessageCode = {
@@ -14,10 +14,10 @@ const SaslMessageCode = {
 
 export class SaslMechanism {
   socket: Socket;
-  writer: Writer;
+  writer: BufferWriter;
   constructor(params: {
     socket: Socket;
-    writer: Writer;
+    writer: BufferWriter;
   }) {
     this.socket = params.socket;
     this.writer = params.writer;

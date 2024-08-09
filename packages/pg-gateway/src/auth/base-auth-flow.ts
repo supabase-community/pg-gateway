@@ -1,10 +1,10 @@
 import type { Socket } from 'node:net';
-import type { BufferReader } from 'pg-protocol/dist/buffer-reader.js';
-import type { Writer } from 'pg-protocol/dist/buffer-writer.js';
 import {
   type BackendError,
   createBackendErrorMessage,
 } from '../backend-error.js';
+import type { BufferReader } from '../buffer-reader.js';
+import type { BufferWriter } from '../buffer-writer.js';
 import type { ConnectionState } from '../connection.types.js';
 
 export interface AuthFlow {
@@ -16,13 +16,13 @@ export interface AuthFlow {
 export abstract class BaseAuthFlow implements AuthFlow {
   protected socket: Socket;
   protected reader: BufferReader;
-  protected writer: Writer;
+  protected writer: BufferWriter;
   protected connectionState: ConnectionState;
 
   constructor(params: {
     socket: Socket;
     reader: BufferReader;
-    writer: Writer;
+    writer: BufferWriter;
     connectionState: ConnectionState;
   }) {
     this.socket = params.socket;

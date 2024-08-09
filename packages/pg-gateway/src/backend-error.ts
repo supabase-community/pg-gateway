@@ -1,4 +1,4 @@
-import { Writer } from 'pg-protocol/dist/buffer-writer.js';
+import { BufferWriter } from './buffer-writer.js';
 import { BackendMessageCode } from './message-codes.js';
 
 export interface BackendError {
@@ -27,7 +27,7 @@ export interface BackendError {
  * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-ERRORRESPONSE
  */
 export function createBackendErrorMessage(error: BackendError) {
-  const writer = new Writer();
+  const writer = new BufferWriter();
 
   writer.addString('S');
   writer.addCString(error.severity);
