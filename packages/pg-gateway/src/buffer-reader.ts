@@ -1,7 +1,7 @@
 const emptyBuffer = Buffer.allocUnsafe(0);
 
 /**
- *
+ * binary data reader tuned for decoding binary specific to the postgres binary protocol
  *
  * @see https://github.com/brianc/node-postgres/blob/54eb0fa216aaccd727765641e7d1cf5da2bc483d/packages/pg-protocol/src/buffer-reader.ts
  */
