@@ -231,6 +231,16 @@ export default class PostgresConnection {
         if (this.isSslRequest(message)) {
           await this.handleSslRequest();
         } else if (this.isStartupMessage(message)) {
+          // Guard against SSL connection not being established when `tls` is enabled
+          if (this.options.tls && !this.secureSocket) {
+            this.sendError({
+              severity: 'FATAL',
+              code: '08P01',
+              message: 'SSL connection is required',
+            });
+            this.socket.end();
+            return;
+          }
           // the next step is determined by handleStartupMessage
           this.handleStartupMessage(message);
         } else {
