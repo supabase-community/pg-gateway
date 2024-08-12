@@ -293,7 +293,9 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
     this.socket.resume();
 
     if (!isValid) {
-      throw new Error('Invalid credentials');
+      throw new Error(
+        `password authentication failed for user "${this.username}"`,
+      );
     }
 
     const serverSignature = createHmac(
