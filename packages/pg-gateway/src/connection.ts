@@ -63,15 +63,8 @@ export type PostgresConnectionOptions = {
    * This is called after the connection is upgraded to TLS (if TLS is being used)
    * but before authentication messages are sent to the frontend.
    *
-   * Callback should return `true` to indicate that it has responded to the startup
-   * message and no further processing should occur. Return `false` to continue
-   * built-in processing.
-   *
-   * **Warning:** By managing the post-startup response yourself (returning `true`),
-   * you bypass further processing by the `PostgresConnection` which means some state
-   * may not be collected and hooks won't be called.
    */
-  onStartup?(state: ConnectionState): boolean | Promise<boolean>;
+  onStartup?(state: ConnectionState): void | Promise<void>;
 
   /**
    * Callback after a successful authentication has completed.
@@ -133,6 +126,7 @@ export default class PostgresConnection {
   secureSocket?: TLSSocket;
   hasStarted = false;
   isAuthenticated = false;
+  detached = false;
   writer = new BufferWriter();
   reader = new BufferReader();
   clientInfo?: ClientInfo;
@@ -192,6 +186,7 @@ export default class PostgresConnection {
    */
   detach() {
     this.removeSocketHandlers(this.socket);
+    this.detached = true;
     return this.socket;
   }
 
@@ -218,6 +213,11 @@ export default class PostgresConnection {
     this.socket.pause();
     const messageSkip = await this.options.onMessage?.(message, this.state);
     this.socket.resume();
+
+    // the socket was detached during onMessage, we skip further processing
+    if (this.detached) {
+      return;
+    }
 
     if (messageSkip) {
       if (this.isStartupMessage(message)) {
@@ -315,6 +315,15 @@ export default class PostgresConnection {
     };
 
     this.hasStarted = true;
+
+    this.socket.pause();
+    await this.options.onStartup?.(this.state);
+    this.socket.resume();
+
+    // the socket was detached during onStartup, we skip further processing
+    if (this.detached) {
+      return;
+    }
 
     if (this.options.auth.method === 'trust') {
       await this.completeAuthentication();
@@ -417,7 +426,12 @@ export default class PostgresConnection {
    */
   async completeAuthentication() {
     this.isAuthenticated = true;
+
     this.sendAuthenticationOk();
+
+    this.socket.pause();
+    await this.options.onAuthenticated?.(this.state);
+    this.socket.resume();
 
     if (this.options.serverVersion) {
       this.sendParameterStatus('server_version', this.options.serverVersion);
@@ -425,11 +439,6 @@ export default class PostgresConnection {
 
     this.step = ServerStep.ReadyForQuery;
     this.sendReadyForQuery('idle');
-
-    // We must pause/resume the socket before/after each hook to prevent race conditions
-    this.socket.pause();
-    await this.options.onAuthenticated?.(this.state);
-    this.socket.resume();
   }
 
   /**
