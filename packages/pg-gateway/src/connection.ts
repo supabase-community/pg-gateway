@@ -9,10 +9,11 @@ import {
   type BackendError,
   createBackendErrorMessage,
 } from './backend-error.js';
-import type {
-  ClientInfo,
-  ConnectionState,
-  TlsInfo,
+import {
+  type ClientInfo,
+  type ConnectionState,
+  ServerStep,
+  type TlsInfo,
 } from './connection.types.js';
 import { MessageBuffer } from './message-buffer.js';
 import { BackendMessageCode, FrontendMessageCode } from './message-codes.js';
@@ -33,7 +34,9 @@ export type PostgresConnectionOptions = {
   /**
    * The server version to send to the frontend.
    */
-  serverVersion?: string;
+  serverVersion?:
+    | string
+    | ((state: ConnectionState) => string | Promise<string>);
 
   /**
    * The authentication mode for the server.
@@ -109,14 +112,6 @@ export type PostgresConnectionOptions = {
   ): Uint8Array | Promise<Uint8Array>;
 };
 
-export const ServerStep = {
-  AwaitingInitialMessage: 'AwaitingInitialMessage',
-  PerformingAuthentication: 'PerformingAuthentication',
-  ReadyForQuery: 'ReadyForQuery',
-} as const;
-
-export type ServerStep = (typeof ServerStep)[keyof typeof ServerStep];
-
 export default class PostgresConnection {
   private step: ServerStep = ServerStep.AwaitingInitialMessage;
   options: PostgresConnectionOptions & {
@@ -152,6 +147,7 @@ export default class PostgresConnection {
       isAuthenticated: this.isAuthenticated,
       clientInfo: this.clientInfo,
       tlsInfo: this.tlsInfo,
+      step: this.step,
     };
   }
 
@@ -434,7 +430,15 @@ export default class PostgresConnection {
     this.socket.resume();
 
     if (this.options.serverVersion) {
-      this.sendParameterStatus('server_version', this.options.serverVersion);
+      let serverVersion: string;
+      if (typeof this.options.serverVersion === 'function') {
+        this.socket.pause();
+        serverVersion = await this.options.serverVersion(this.state);
+        this.socket.resume();
+      } else {
+        serverVersion = this.options.serverVersion;
+      }
+      this.sendParameterStatus('server_version', serverVersion);
     }
 
     this.step = ServerStep.ReadyForQuery;
