@@ -316,6 +316,17 @@ export default class PostgresConnection {
 
     this.hasStarted = true;
 
+    if (this.options.onStartup) {
+      this.socket.pause();
+      const skipFurtherProcessing = await this.options.onStartup(this.state);
+      this.socket.resume();
+
+      if (skipFurtherProcessing) {
+        this.step = ServerStep.ReadyForQuery;
+        return;
+      }
+    }
+
     if (this.options.auth.method === 'trust') {
       await this.completeAuthentication();
       return;
@@ -417,7 +428,12 @@ export default class PostgresConnection {
    */
   async completeAuthentication() {
     this.isAuthenticated = true;
+
     this.sendAuthenticationOk();
+
+    this.socket.pause();
+    await this.options.onAuthenticated?.(this.state);
+    this.socket.resume();
 
     if (this.options.serverVersion) {
       this.sendParameterStatus('server_version', this.options.serverVersion);
@@ -425,11 +441,6 @@ export default class PostgresConnection {
 
     this.step = ServerStep.ReadyForQuery;
     this.sendReadyForQuery('idle');
-
-    // We must pause/resume the socket before/after each hook to prevent race conditions
-    this.socket.pause();
-    await this.options.onAuthenticated?.(this.state);
-    this.socket.resume();
   }
 
   /**
