@@ -99,18 +99,65 @@ export type PostgresConnectionOptions = {
   /**
    * Callback for every frontend query message.
    * Use this to implement query handling.
-   *
-   * If left `undefined`, an error will be sent to the frontend
-   * indicating that queries aren't implemented.
-   *
-   * TODO: change return signature to be more developer-friendly
-   * and then translate to wire protocol.
    */
   onQuery?(
     query: string,
     state: ConnectionState,
-  ): Uint8Array | Promise<Uint8Array>;
+  ):
+    | void
+    | Promise<void>
+    | null
+    | Promise<null>
+    | QueryResponse
+    | Promise<QueryResponse>;
 };
+
+export type QueryResponse =
+  | Iterable<CommandResponse>
+  | AsyncIterable<CommandResponse>;
+
+export type Command =
+  | 'select'
+  | 'insert'
+  | 'update'
+  | 'delete'
+  | 'merge'
+  | 'move'
+  | 'fetch'
+  | 'copy';
+
+export type ExecCommandResponse = {
+  command: Command;
+  affectedRows: number | (() => number);
+};
+
+export type QueryCommandResponse = {
+  command: Command;
+  fields: Field[];
+  rows:
+    | Iterable<Row>
+    | AsyncIterable<Row>
+    | (() => Iterable<Row>)
+    | (() => AsyncIterable<Row>);
+  affectedRows?: number | ((iteratedRows: number) => number);
+};
+
+export type CommandResponse = ExecCommandResponse | QueryCommandResponse | null;
+
+export type Field<T extends string = string> = {
+  name: T;
+  dataType: {
+    id: number;
+    size?: number;
+    modifier?: number;
+  };
+  format?: 'text' | 'binary';
+  tableId?: number;
+  columnId?: number;
+};
+
+// TODO: support non-string types
+export type Row<T = Record<string, string>> = T;
 
 export default class PostgresConnection {
   private step: ServerStep = ServerStep.AwaitingInitialMessage;
@@ -368,6 +415,9 @@ export default class PostgresConnection {
     const code = this.reader.byte();
 
     switch (code) {
+      case FrontendMessageCode.Query:
+        this.handleQuery(message);
+        break;
       case FrontendMessageCode.Terminate:
         this.handleTerminate(message);
         break;
@@ -383,6 +433,165 @@ export default class PostgresConnection {
 
   handleTerminate(message: Buffer) {
     this.socket.end();
+  }
+
+  async handleQuery(message: Buffer) {
+    const length = this.reader.int32();
+    const query = this.reader.cstring();
+
+    if (!this.options.onQuery) {
+      return;
+    }
+
+    this.socket.pause();
+    const queryResponse = await this.options.onQuery(query, this.state);
+    this.socket.resume();
+
+    if (!queryResponse) {
+      if (queryResponse === null) {
+        this.sendEmptyQueryResponse();
+        this.sendReadyForQuery();
+      }
+      return;
+    }
+
+    for await (const commandResponse of queryResponse) {
+      if (commandResponse === null) {
+        this.sendEmptyQueryResponse();
+        this.sendReadyForQuery();
+        return;
+      }
+
+      if ('fields' in commandResponse && 'rows' in commandResponse) {
+        const { command, fields, rows, affectedRows } = commandResponse;
+
+        const iterableRows = typeof rows === 'function' ? rows() : rows;
+
+        this.sendRowDescription(fields);
+
+        let iteratedRows = 0;
+        for await (const row of iterableRows) {
+          this.sendDataRow(row, fields);
+          iteratedRows++;
+        }
+
+        const finalAffectedRows =
+          typeof affectedRows === 'function'
+            ? affectedRows(iteratedRows)
+            : affectedRows ?? iteratedRows;
+
+        this.sendCommandComplete(command, finalAffectedRows);
+      } else {
+        const { command, affectedRows } = commandResponse;
+
+        const finalAffectedRows =
+          typeof affectedRows === 'function' ? affectedRows() : affectedRows;
+
+        this.sendCommandComplete(command, finalAffectedRows);
+      }
+    }
+
+    this.sendReadyForQuery();
+  }
+
+  sendRowDescription(fields: Field[]) {
+    console.log({ fields });
+    this.writer.addInt16(fields.length);
+
+    for (const field of fields) {
+      this.writer.addCString(field.name);
+      this.writer.addInt32(field.tableId ?? 0);
+      this.writer.addInt16(field.columnId ?? 0);
+      this.writer.addInt32(field.dataType.id);
+      this.writer.addInt16(field.dataType.size ?? -1);
+      this.writer.addInt32(field.dataType.modifier ?? -1);
+      switch (field.format) {
+        case undefined:
+        case 'text':
+          this.writer.addInt16(0);
+          break;
+        case 'binary':
+          this.writer.addInt16(1);
+          break;
+        default:
+          throw new Error(`Unknown field format '${field.format}'`);
+      }
+    }
+
+    const response = this.writer.flush(
+      BackendMessageCode.RowDescriptionMessage,
+    );
+    this.sendData(response);
+  }
+
+  sendDataRow(row: Row, fields: Field[]) {
+    const columns = Object.entries(row)
+      .map(([key, value]) => {
+        const fieldIndex = fields.findIndex((field) => field.name === key);
+
+        const field = fields[fieldIndex];
+
+        if (!field) {
+          throw new Error(
+            `Row column '${key}' does not exists in fields array`,
+          );
+        }
+
+        return {
+          field,
+          fieldIndex,
+          value,
+        };
+      })
+      .sort((columnA, columnB) => columnA.fieldIndex - columnB.fieldIndex);
+
+    this.writer.addInt16(columns.length);
+
+    for (const { field, value } of columns) {
+      this.writer.addInt32(value.length);
+
+      switch (field.format) {
+        case undefined:
+        case 'text':
+          // TODO: serialize non-text types to their appropriate string value
+          this.writer.addString(value);
+          break;
+
+        case 'binary':
+          // TODO: serialize non-text types to their appropriate binary value
+          this.writer.add(Buffer.from(value));
+          break;
+        default:
+          throw new Error(`Unknown field format '${field.format}'`);
+      }
+    }
+
+    const response = this.writer.flush(BackendMessageCode.DataRow);
+    this.sendData(response);
+  }
+
+  /**
+   *
+   * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-COMMANDCOMPLETE
+   */
+  sendCommandComplete(command: Command, affectedRows: number) {
+    // Insert is a special case, see linked spec above
+    if (command === 'insert') {
+      this.writer.addCString(`${command.toUpperCase()} 0 ${affectedRows}`);
+    } else {
+      this.writer.addCString(`${command.toUpperCase()} ${affectedRows}`);
+    }
+    const response = this.writer.flush(BackendMessageCode.CommandComplete);
+    this.sendData(response);
+  }
+
+  /**
+   *
+   * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-EMPTYQUERYRESPONSE
+   */
+  sendEmptyQueryResponse() {
+    const response = this.writer.flush(BackendMessageCode.EmptyQuery);
+    this.sendData(response);
   }
 
   /**

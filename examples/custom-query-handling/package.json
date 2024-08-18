@@ -1,0 +1,20 @@
+{
+  "name": "custom-query-handling-example",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx index.ts",
+    "format": "biome format --write .",
+    "lint": "biome lint --error-on-warnings .",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pg-gateway": "*"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.8.3",
+    "@total-typescript/tsconfig": "^1.0.4",
+    "@types/node": "^20.14.11",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.3"
+  }
+}
