@@ -83,18 +83,22 @@ export type PostgresConnectionOptions = {
    * Includes `state` which holds connection information gathered so far and
    * can be used to understand where the protocol is at in its lifecycle.
    *
-   * Callback should return `true` to indicate that it has responded to the message
-   * and no further processing should occur. Return `false` to continue
-   * built-in processing.
+   * Callback can optionally return raw `Uint8Array` response data that will
+   * be sent back to the client. It can also return multiple `Uint8Array`
+   * responses via an `Iterable<Uint8Array>` or `AsyncIterable<Uint8Array>`.
+   * This means you can turn this hook into a generator function to
+   * asynchronously stream responses back to the client.
    *
-   * **Warning:** By managing the message yourself (returning `true`), you bypass further
+   * **Warning:** By managing the message yourself (returning data), you bypass further
    * processing by the `PostgresConnection` which means some state may not be collected
    * and hooks won't be called depending on where the protocol is at in its lifecycle.
+   * If you wish to hook into messages without bypassing further processing, do not return
+   * any data from this callback.
    */
   onMessage?(
     data: Uint8Array,
     state: ConnectionState,
-  ): boolean | Promise<boolean>;
+  ): MessageResponse | Promise<MessageResponse>;
 
   /**
    * Callback for every frontend query message.
@@ -111,6 +115,12 @@ export type PostgresConnectionOptions = {
     state: ConnectionState,
   ): Uint8Array | Promise<Uint8Array>;
 };
+
+export type MessageResponse =
+  | undefined
+  | Uint8Array
+  | Iterable<Uint8Array>
+  | AsyncIterable<Uint8Array>;
 
 export default class PostgresConnection {
   private step: ServerStep = ServerStep.AwaitingInitialMessage;
@@ -207,7 +217,25 @@ export default class PostgresConnection {
     this.reader.setBuffer(0, message);
 
     this.socket.pause();
-    const messageSkip = await this.options.onMessage?.(message, this.state);
+    let skipProcessing = false;
+    const messageResponse = await this.options.onMessage?.(message, this.state);
+
+    // A `Uint8Array` or `Iterator<Uint8Array>` or `AsyncIterator<Uint8Array>`
+    // can be returned that contains raw message response data
+    if (messageResponse) {
+      const iterableResponse =
+        messageResponse instanceof Uint8Array
+          ? [messageResponse]
+          : messageResponse;
+
+      // Asynchronously stream responses back to client
+      for await (const responseData of iterableResponse) {
+        // Skip built-in processing if any response data is sent
+        skipProcessing = true;
+        this.sendData(responseData);
+      }
+    }
+
     this.socket.resume();
 
     // the socket was detached during onMessage, we skip further processing
@@ -215,7 +243,7 @@ export default class PostgresConnection {
       return;
     }
 
-    if (messageSkip) {
+    if (skipProcessing) {
       if (this.isStartupMessage(message)) {
         this.hasStarted = true;
       }
