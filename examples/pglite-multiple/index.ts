@@ -73,16 +73,9 @@ const server = net.createServer((socket) => {
       }
 
       // Forward raw message to PGlite
-      try {
-        const [result] = await db.execProtocol(data);
-        if (result) {
-          const [_, responseData] = result;
-          connection.sendData(responseData);
-        }
-      } catch (err) {
-        connection.sendError(err as BackendError);
-        connection.sendReadyForQuery();
-      }
+      const responseData = await db.execProtocolRaw(data);
+      connection.sendData(responseData);
+
       return true;
     },
   });
