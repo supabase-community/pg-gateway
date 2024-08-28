@@ -25,6 +25,8 @@ export interface BackendError {
  * Creates a backend error message
  *
  * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-ERRORRESPONSE
+ *
+ * For error fields, @see https://www.postgresql.org/docs/current/protocol-error-fields.html#PROTOCOL-ERROR-FIELDS
  */
 export function createBackendErrorMessage(error: BackendError) {
   const writer = new BufferWriter();

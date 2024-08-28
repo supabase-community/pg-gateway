@@ -1,42 +1,31 @@
-import type { Socket } from 'node:net';
-import {
-  TLSSocket,
-  type TLSSocketOptions,
-  createSecureContext,
-} from 'node:tls';
-import type { TlsOptions, TlsOptionsCallback } from './connection';
-import type { TlsInfo } from './connection.types.js';
+import { PassThrough, Readable, Writable } from 'node:stream';
+import { TLSSocket, type TLSSocketOptions, createSecureContext } from 'node:tls';
+import type { TlsOptions, TlsOptionsCallback } from '../../connection.js';
+import type { TlsInfo } from '../../connection.types.js';
+import type { Duplex } from '../../duplex.js';
+import { nodeDuplexToWebDuplex, webDuplexToNodeDuplex } from './index.js';
 
 export async function upgradeTls(
-  socket: Socket,
+  duplex: Duplex<Uint8Array>,
   options: TlsOptions | TlsOptionsCallback,
   tlsInfo: TlsInfo = {},
   requestCert = false,
-): Promise<{ secureSocket: TLSSocket; tlsInfo: TlsInfo }> {
-  const originalSocket = socket;
-  originalSocket.pause();
+): Promise<{
+  duplex: Duplex<Uint8Array>;
+  tlsInfo: TlsInfo;
+}> {
+  const tlsSocketOptions = await createTlsSocketOptions(options, tlsInfo, requestCert);
+  const nodeDuplex = await webDuplexToNodeDuplex(duplex);
 
-  const tlsSocketOptions = await createTlsSocketOptions(
-    options,
-    tlsInfo,
-    requestCert,
-  );
-
-  const secureSocket = new TLSSocket(originalSocket, {
+  const secureSocket = new TLSSocket(nodeDuplex, {
     ...tlsSocketOptions,
     isServer: true,
     SNICallback: async (sniServerName, callback) => {
       tlsInfo.sniServerName = sniServerName;
-      const updatedTlsSocketOptions = await createTlsSocketOptions(
-        options,
-        tlsInfo,
-        requestCert,
-      );
+      const updatedTlsSocketOptions = await createTlsSocketOptions(options, tlsInfo, requestCert);
       callback(null, createSecureContext(updatedTlsSocketOptions));
     },
   });
-
-  secureSocket.pause();
 
   await new Promise<void>((resolve) => {
     secureSocket.on('secure', () => {
@@ -45,9 +34,11 @@ export async function upgradeTls(
     });
   });
 
-  originalSocket.resume();
-
-  return { secureSocket, tlsInfo };
+  return {
+    duplex: await nodeDuplexToWebDuplex(nodeDuplex),
+    // clientCertificate: secureSocket.getPeerCertificate(),
+    tlsInfo,
+  };
 }
 
 async function createTlsSocketOptions(
@@ -56,14 +47,12 @@ async function createTlsSocketOptions(
   requestCert: boolean,
 ): Promise<TLSSocketOptions> {
   const { key, cert, ca, passphrase } =
-    typeof optionsOrCallback === 'function'
-      ? await optionsOrCallback(tlsInfo)
-      : optionsOrCallback;
+    typeof optionsOrCallback === 'function' ? await optionsOrCallback(tlsInfo) : optionsOrCallback;
 
   return {
-    key,
-    cert,
-    ca,
+    key: Buffer.from(key),
+    cert: Buffer.from(cert),
+    ca: ca ? Buffer.from(ca) : undefined,
     passphrase,
     requestCert,
   };

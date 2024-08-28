@@ -1,14 +1,9 @@
-import {
-  createHash,
-  createHmac,
-  pbkdf2Sync,
-  randomBytes,
-  timingSafeEqual,
-} from 'node:crypto';
-import type { Socket } from 'node:net';
+import { decodeBase64, encodeBase64 } from '@std/encoding/base64';
+import { createBackendErrorMessage } from '../../backend-error.js';
 import type { BufferReader } from '../../buffer-reader.js';
 import type { BufferWriter } from '../../buffer-writer.js';
 import type { ConnectionState } from '../../connection.types';
+import { createHashKey, createHmacKey, pbkdf2, timingSafeEqual } from '../../crypto.js';
 import type { AuthFlow } from '../base-auth-flow';
 import { SaslMechanism } from './sasl-mechanism';
 
@@ -38,38 +33,36 @@ export type ScramSha256AuthOptions = {
   ) => ScramSha256Data | Promise<ScramSha256Data>;
 };
 
+const { subtle } = globalThis.crypto;
+
 /**
  * Creates scram-sha-256 data for password authentication.
  * @see https://www.postgresql.org/docs/current/sasl-authentication.html
  */
-export function createScramSha256Data(
+export async function createScramSha256Data(
   password: string,
   iterations = 4096,
-): ScramSha256Data {
-  const salt = randomBytes(16).toString('base64');
-  const saltBuffer = Buffer.from(salt, 'base64');
-  const saltedPassword = pbkdf2Sync(
-    password,
-    saltBuffer,
-    iterations,
-    32,
-    'sha256',
-  );
+): Promise<ScramSha256Data> {
+  const salt = new Uint8Array(16);
+  crypto.getRandomValues(salt);
 
-  const clientKey = createHmac('sha256', saltedPassword)
-    .update('Client Key')
-    .digest();
-  const storedKey = createHash('sha256').update(clientKey).digest();
+  const saltedPassword = await pbkdf2(password, salt, iterations, 32, 'SHA-256');
+  // const saltedPassword = pbkdf2Sync(password, saltBuffer, iterations, 32, 'sha256');
 
-  const serverKey = createHmac('sha256', saltedPassword)
-    .update('Server Key')
-    .digest();
+  const clientKey = await createHmacKey(saltedPassword, 'Client Key', 'SHA-256');
+  // const clientKey = createHmac('sha256', saltedPassword).update('Client Key').digest();
+
+  const storedKey = await createHashKey(clientKey, 'SHA-256');
+  // const storedKey = createHash('sha256').update(clientKey).digest();
+
+  const serverKey = await createHmacKey(saltedPassword, 'Server Key', 'SHA-256');
+  // const serverKey = createHmac('sha256', saltedPassword).update('Server Key').digest();
 
   return {
-    salt,
+    salt: encodeBase64(salt),
     iterations,
-    storedKey: storedKey.toString('base64'),
-    serverKey: serverKey.toString('base64'),
+    storedKey: encodeBase64(storedKey),
+    serverKey: encodeBase64(serverKey),
   };
 }
 
@@ -77,27 +70,27 @@ export function createScramSha256Data(
  * Verifies a scram-sha-256 password using the provided parameters.
  * @see https://www.postgresql.org/docs/current/sasl-authentication.html
  */
-export function verifyScramSha256Password(params: {
+export async function verifyScramSha256Password(params: {
   authMessage: string;
   clientProof: string;
   storedKey: string;
 }) {
   const { authMessage, clientProof, storedKey } = params;
-  const clientProofBuffer = Buffer.from(clientProof, 'base64');
-  const storedKeyBuffer = Buffer.from(storedKey, 'base64');
+  const clientProofBuffer = decodeBase64(clientProof);
+  const storedKeyBuffer = decodeBase64(storedKey);
 
-  const clientSignature = createHmac('sha256', storedKeyBuffer)
-    .update(authMessage)
-    .digest();
-  const clientKey = Buffer.alloc(clientProofBuffer.length);
+  const clientSignature = await createHmacKey(storedKeyBuffer, authMessage, 'SHA-256');
+  const clientSignatureView = new Uint8Array(clientSignature);
+  const clientKey = new Uint8Array(clientProofBuffer.length);
+
   for (let i = 0; i < clientProofBuffer.length; i++) {
     // biome-ignore lint/style/noNonNullAssertion: <explanation>
-    clientKey[i] = clientProofBuffer[i]! ^ clientSignature[i]!;
+    clientKey[i] = clientProofBuffer[i]! ^ clientSignatureView[i]!;
   }
 
-  const computedStoredKey = createHash('sha256').update(clientKey).digest();
+  const computedStoredKey = await createHashKey(clientKey, 'SHA-256');
 
-  return timingSafeEqual(storedKeyBuffer, computedStoredKey);
+  return await timingSafeEqual(storedKeyBuffer, computedStoredKey);
 }
 
 const ScramSha256Step = {
@@ -111,9 +104,7 @@ type ScramSha256Step = (typeof ScramSha256Step)[keyof typeof ScramSha256Step];
 
 export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
   auth: ScramSha256AuthOptions & {
-    validateCredentials: NonNullable<
-      ScramSha256AuthOptions['validateCredentials']
-    >;
+    validateCredentials: NonNullable<ScramSha256AuthOptions['validateCredentials']>;
   };
   username: string;
   clientFirstMessageBare?: string;
@@ -127,15 +118,11 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
   constructor(params: {
     auth: ScramSha256AuthOptions;
     username: string;
-    socket: Socket;
     reader: BufferReader;
     writer: BufferWriter;
     connectionState: ConnectionState;
   }) {
-    super({
-      socket: params.socket,
-      writer: params.writer,
-    });
+    super({ writer: params.writer });
     this.username = params.username;
     this.auth = {
       ...params.auth,
@@ -159,66 +146,59 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
    */
   async getScramSha256Data(params: { username: string }) {
     if (!this.scramSha256Data) {
-      this.socket.pause();
-      this.scramSha256Data = await this.auth.getScramSha256Data(
-        params,
-        this.connectionState,
-      );
-      this.socket.resume();
+      this.scramSha256Data = await this.auth.getScramSha256Data(params, this.connectionState);
     }
     return this.scramSha256Data;
   }
 
-  sendInitialAuthMessage() {
-    this.sendAuthenticationSASL();
+  createInitialAuthMessage() {
+    return this.createAuthenticationSASL();
   }
 
-  async handleClientMessage(message: Buffer) {
+  async *handleClientMessage(message: BufferSource) {
     switch (this.step) {
       case ScramSha256Step.Initial:
-        return await this.handleClientFirstMessage(message);
+        return yield* this.handleClientFirstMessage(message);
       case ScramSha256Step.ServerFirstMessage:
-        return await this.handleClientFinalMessage(message);
+        return yield* this.handleClientFinalMessage(message);
       default:
         throw new Error('Unexpected SCRAM-SHA-256 authentication step');
     }
   }
 
-  async handleClientFirstMessage(message: Buffer) {
+  async *handleClientFirstMessage(message: BufferSource) {
     const length = this.reader.int32();
     const saslMechanism = this.reader.cstring();
 
     if (saslMechanism !== 'SCRAM-SHA-256') {
-      this.sendError({
+      yield createBackendErrorMessage({
         severity: 'FATAL',
         code: '28000',
         message: 'Unsupported SASL authentication mechanism',
       });
-      this.socket.end();
-      return;
+      throw new Error('end socket');
     }
 
     const responseLength = this.reader.int32();
     const clientFirstMessage = this.reader.string(responseLength);
 
-    const serverFirstMessage =
-      await this.createServerFirstMessage(clientFirstMessage);
+    const serverFirstMessage = await this.createServerFirstMessage(clientFirstMessage);
 
     this.step = ScramSha256Step.ServerFirstMessage;
-    this.sendAuthenticationSASLContinue(serverFirstMessage);
+    yield this.createAuthenticationSASLContinue(serverFirstMessage);
   }
 
   async createServerFirstMessage(clientFirstMessage: string) {
     const clientFirstMessageParts = clientFirstMessage.split(',');
     this.clientFirstMessageBare = clientFirstMessageParts.slice(2).join(',');
     const clientNonce =
-      clientFirstMessageParts
-        .find((part) => part.startsWith('r='))
-        ?.substring(2) || '';
+      clientFirstMessageParts.find((part) => part.startsWith('r='))?.substring(2) || '';
 
     // Generate server nonce by appending random bytes to client nonce
-    const serverNoncePart = randomBytes(18).toString('base64');
-    this.serverNonce = clientNonce + serverNoncePart;
+    const serverNoncePart = new Uint8Array(18);
+    crypto.getRandomValues(serverNoncePart);
+
+    this.serverNonce = clientNonce + encodeBase64(serverNoncePart);
 
     const { salt, iterations } = await this.getScramSha256Data({
       username: this.username,
@@ -228,18 +208,18 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
     return this.serverFirstMessage;
   }
 
-  async handleClientFinalMessage(message: Buffer) {
+  async *handleClientFinalMessage(message: BufferSource) {
     try {
       const serverFinalMessage = await this.createServerFinalMessage(message);
       this.step = ScramSha256Step.Completed;
-      this.sendAuthenticationSASLFinal(serverFinalMessage);
+      yield this.createAuthenticationSASLFinal(serverFinalMessage);
     } catch (error) {
-      this.sendError({
+      yield createBackendErrorMessage({
         severity: 'FATAL',
         code: '28000',
         message: (error as Error).message,
       });
-      this.socket.end();
+      throw new Error('end socket');
     }
   }
 
@@ -247,19 +227,15 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
     return this.step === ScramSha256Step.Completed;
   }
 
-  async createServerFinalMessage(message: Buffer) {
+  async createServerFinalMessage(message: BufferSource) {
     const length = this.reader.int32();
     const clientFinalMessage = this.reader.string(length);
     const clientFinalMessageParts = clientFinalMessage.split(',');
     const channelBinding = clientFinalMessageParts
       .find((part) => part.startsWith('c='))
       ?.substring(2);
-    const fullNonce = clientFinalMessageParts
-      .find((part) => part.startsWith('r='))
-      ?.substring(2);
-    const clientProof = clientFinalMessageParts
-      .find((part) => part.startsWith('p='))
-      ?.substring(2);
+    const fullNonce = clientFinalMessageParts.find((part) => part.startsWith('r='))?.substring(2);
+    const clientProof = clientFinalMessageParts.find((part) => part.startsWith('p='))?.substring(2);
 
     if (!channelBinding || !fullNonce || !clientProof) {
       throw new Error('Invalid client final message');
@@ -280,7 +256,6 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
       username: this.username,
     });
 
-    this.socket.pause();
     const isValid = await this.auth.validateCredentials(
       {
         authMessage,
@@ -290,21 +265,14 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
       },
       this.connectionState,
     );
-    this.socket.resume();
 
     if (!isValid) {
-      throw new Error(
-        `password authentication failed for user "${this.username}"`,
-      );
+      throw new Error(`password authentication failed for user "${this.username}"`);
     }
 
-    const serverSignature = createHmac(
-      'sha256',
-      Buffer.from(data.serverKey, 'base64'),
-    )
-      .update(authMessage)
-      .digest();
+    const serverKeyBuffer = decodeBase64(data.serverKey);
+    const serverSignature = await createHmacKey(serverKeyBuffer, authMessage, 'SHA-256');
 
-    return `v=${serverSignature.toString('base64')}`;
+    return `v=${encodeBase64(serverSignature)}`;
   }
 }

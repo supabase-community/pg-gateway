@@ -1,12 +1,8 @@
+import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 import { mkdir, readFile } from 'node:fs/promises';
 import net from 'node:net';
-import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
-import {
-  type BackendError,
-  PostgresConnection,
-  type TlsOptionsCallback,
-  createPreHashedPassword,
-} from 'pg-gateway';
+import { type TlsOptionsCallback, createPreHashedPassword } from 'pg-gateway';
+import { fromNodeSocket } from 'pg-gateway/node';
 
 const tls: TlsOptionsCallback = async ({ sniServerName }) => {
   // Optionally serve different certs based on `sniServerName`
@@ -25,10 +21,10 @@ function getIdFromServerName(serverName: string) {
   return id;
 }
 
-const server = net.createServer((socket) => {
+const server = net.createServer(async (socket) => {
   let db: PGliteInterface;
 
-  const connection = new PostgresConnection(socket, {
+  const connection = await fromNodeSocket(socket, {
     serverVersion: '16.3 (PGlite 0.2.0)',
     auth: {
       method: 'md5',
@@ -44,8 +40,7 @@ const server = net.createServer((socket) => {
           code: '08000',
           message: 'ssl connection required',
         });
-        connection.socket.end();
-        return;
+        throw new Error('end socket');
       }
 
       if (!tlsInfo.sniServerName) {
@@ -54,8 +49,7 @@ const server = net.createServer((socket) => {
           code: '08000',
           message: 'ssl sni extension required',
         });
-        connection.socket.end();
-        return;
+        throw new Error('end socket');
       }
 
       const databaseId = getIdFromServerName(tlsInfo.sniServerName);

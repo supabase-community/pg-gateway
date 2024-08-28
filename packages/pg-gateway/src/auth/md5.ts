@@ -1,10 +1,12 @@
-import { type BinaryLike, createHash } from 'node:crypto';
-import type { Socket } from 'node:net';
+import { crypto } from '@std/crypto';
+import { encodeHex } from '@std/encoding/hex';
+import { createBackendErrorMessage } from '../backend-error.js';
 import type { BufferReader } from '../buffer-reader.js';
 import type { BufferWriter } from '../buffer-writer.js';
 import type { ConnectionState } from '../connection.types';
 import { BackendMessageCode } from '../message-codes';
 import { BaseAuthFlow } from './base-auth-flow';
+import { concat } from '@std/bytes/concat';
 
 export type Md5AuthOptions = {
   method: 'md5';
@@ -12,7 +14,7 @@ export type Md5AuthOptions = {
     credentials: {
       username: string;
       preHashedPassword: string;
-      salt: Buffer;
+      salt: BufferSource;
       hashedPassword: string;
     },
     connectionState: ConnectionState,
@@ -28,13 +30,12 @@ export class Md5AuthFlow extends BaseAuthFlow {
     validateCredentials: NonNullable<Md5AuthOptions['validateCredentials']>;
   };
   private username: string;
-  private salt: Buffer;
+  private salt: Uint8Array;
   private completed = false;
 
   constructor(params: {
     auth: Md5AuthOptions;
     username: string;
-    socket: Socket;
     reader: BufferReader;
     writer: BufferWriter;
     connectionState: ConnectionState;
@@ -45,10 +46,7 @@ export class Md5AuthFlow extends BaseAuthFlow {
       validateCredentials:
         params.auth.validateCredentials ??
         (async ({ preHashedPassword, hashedPassword, salt }) => {
-          const expectedHashedPassword = await hashPreHashedPassword(
-            preHashedPassword,
-            salt,
-          );
+          const expectedHashedPassword = await hashPreHashedPassword(preHashedPassword, salt);
           return hashedPassword === expectedHashedPassword;
         }),
     };
@@ -56,11 +54,10 @@ export class Md5AuthFlow extends BaseAuthFlow {
     this.salt = generateMd5Salt();
   }
 
-  async handleClientMessage(message: Buffer): Promise<void> {
+  async *handleClientMessage(message: BufferSource) {
     const length = this.reader.int32();
     const hashedPassword = this.reader.cstring();
 
-    this.socket.pause();
     const preHashedPassword = await this.auth.getPreHashedPassword(
       {
         username: this.username,
@@ -76,23 +73,21 @@ export class Md5AuthFlow extends BaseAuthFlow {
       },
       this.connectionState,
     );
-    this.socket.resume();
 
     if (!isValid) {
-      this.sendError({
+      yield createBackendErrorMessage({
         severity: 'FATAL',
         code: '28P01',
         message: `password authentication failed for user "${this.username}"`,
       });
-      this.socket.end();
-      return;
+      throw new Error('end socket');
     }
 
     this.completed = true;
   }
 
-  override sendInitialAuthMessage(): void {
-    this.sendAuthenticationMD5Password();
+  override createInitialAuthMessage() {
+    return this.createAuthenticationMD5Password();
   }
 
   get isCompleted(): boolean {
@@ -100,19 +95,15 @@ export class Md5AuthFlow extends BaseAuthFlow {
   }
 
   /**
-   * Sends the authentication response to the client.
+   * Creates the authentication response.
    *
    * @see https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-START-UP
    */
-  private sendAuthenticationMD5Password(): void {
+  private createAuthenticationMD5Password() {
     this.writer.addInt32(5);
     this.writer.add(Buffer.from(this.salt));
 
-    const response = this.writer.flush(
-      BackendMessageCode.AuthenticationResponse,
-    );
-
-    this.socket.write(response);
+    return this.writer.flush(BackendMessageCode.AuthenticationResponse);
   }
 }
 
@@ -121,30 +112,39 @@ export class Md5AuthFlow extends BaseAuthFlow {
  *
  * @see https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-START-UP
  */
-export async function hashPreHashedPassword(
-  preHashedPassword: string,
-  salt: Buffer,
-) {
-  const hash = md5(Buffer.concat([Buffer.from(preHashedPassword), salt]));
+export async function hashPreHashedPassword(preHashedPassword: string, salt: BufferSource) {
+  const hash = await md5(
+    concat([
+      new TextEncoder().encode(preHashedPassword),
+      salt instanceof ArrayBuffer
+        ? new Uint8Array(salt)
+        : new Uint8Array(salt.buffer, salt.byteOffset, salt.byteLength),
+    ]),
+  );
   return `md5${hash}`;
 }
 
 /**
  * Computes the MD5 hash of the given value.
  */
-export function md5(value: BinaryLike) {
-  return createHash('md5').update(value).digest('hex');
+export async function md5(value: string | BufferSource) {
+  const hash = await crypto.subtle.digest(
+    'MD5',
+    typeof value === 'string' ? new TextEncoder().encode(value) : value,
+  );
+
+  return encodeHex(hash);
 }
 
 /**
  * Generates a random 4-byte salt for MD5 hashing.
  */
 export function generateMd5Salt() {
-  const salt = Buffer.alloc(4);
+  const salt = new Uint8Array(4);
   crypto.getRandomValues(salt);
   return salt;
 }
 
-export function createPreHashedPassword(username: string, password: string) {
-  return md5(`${password}${username}`);
+export async function createPreHashedPassword(username: string, password: string) {
+  return await md5(`${password}${username}`);
 }

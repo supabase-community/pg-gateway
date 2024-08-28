@@ -1,61 +1,55 @@
-const emptyBuffer = Buffer.allocUnsafe(0);
-
 /**
- * binary data reader tuned for decoding binary specific to the postgres binary protocol
+ * Binary data reader tuned for decoding the Postgres wire protocol.
  *
  * @see https://github.com/brianc/node-postgres/blob/54eb0fa216aaccd727765641e7d1cf5da2bc483d/packages/pg-protocol/src/buffer-reader.ts
  */
 export class BufferReader {
-  private buffer: Buffer = emptyBuffer;
-
-  // TODO(bmc): support non-utf8 encoding?
-  private encoding = 'utf-8' as const;
+  private buffer = new ArrayBuffer(0);
+  private dataView = new DataView(this.buffer);
+  private decoder = new TextDecoder();
 
   constructor(private offset = 0) {}
 
-  public setBuffer(offset: number, buffer: Buffer): void {
+  public setBuffer(offset: number, buffer: ArrayBuffer): void {
     this.offset = offset;
     this.buffer = buffer;
+    this.dataView = new DataView(this.buffer);
   }
 
   public int16(): number {
-    const result = this.buffer.readInt16BE(this.offset);
+    const result = this.dataView.getInt16(this.offset);
     this.offset += 2;
     return result;
   }
 
   public byte(): number {
-    // biome-ignore lint/style/noNonNullAssertion: <explanation>
-    const result = this.buffer[this.offset]!;
+    const result = this.dataView.getUint8(this.offset);
     this.offset++;
     return result;
   }
 
   public int32(): number {
-    const result = this.buffer.readInt32BE(this.offset);
+    const result = this.dataView.getInt32(this.offset);
     this.offset += 4;
     return result;
   }
 
   public string(length: number): string {
-    const result = this.buffer.toString(
-      this.encoding,
-      this.offset,
-      this.offset + length,
-    );
+    const dataView = new DataView(this.buffer, this.offset, length);
     this.offset += length;
-    return result;
+    return this.decoder.decode(dataView);
   }
 
   public cstring(): string {
     const start = this.offset;
     let end = start;
-    while (this.buffer[end++] !== 0) {}
+    while (this.dataView.getUint8(end++) !== 0) {}
+    const dataView = new DataView(this.buffer, start, end - start);
     this.offset = end;
-    return this.buffer.toString(this.encoding, start, end - 1);
+    return this.decoder.decode(dataView);
   }
 
-  public bytes(length: number): Buffer {
+  public bytes(length: number): ArrayBuffer {
     const result = this.buffer.slice(this.offset, this.offset + length);
     this.offset += length;
     return result;
