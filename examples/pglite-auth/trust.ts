@@ -10,7 +10,6 @@ const server = net.createServer((socket) => {
     auth: {
       method: 'trust',
     },
-
     async onStartup() {
       // Wait for PGlite to be ready before further processing
       await db.waitReady;
