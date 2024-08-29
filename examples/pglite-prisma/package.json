@@ -1,0 +1,25 @@
+{
+  "name": "pglite-prisma-example",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx index.ts",
+    "format": "biome format --write .",
+    "lint": "biome lint --error-on-warnings .",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.2.4",
+    "@prisma/client": "^5.19.0",
+    "pg": "^8.12.0",
+    "pg-gateway": "*"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.8.3",
+    "@total-typescript/tsconfig": "^1.0.4",
+    "@types/node": "^20.14.11",
+    "@types/pg": "^8.11.8",
+    "prisma": "^5.19.0",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.3"
+  }
+}

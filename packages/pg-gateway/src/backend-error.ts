@@ -1,8 +1,9 @@
+import { BufferReader } from './buffer-reader.js';
 import { BufferWriter } from './buffer-writer.js';
 import { BackendMessageCode } from './message-codes.js';
 
-export interface BackendError {
-  severity: 'ERROR' | 'FATAL' | 'PANIC';
+export type ErrorNoticeBase = {
+  severity: string;
   code: string;
   message: string;
   detail?: string;
@@ -19,7 +20,15 @@ export interface BackendError {
   file?: string;
   line?: string;
   routine?: string;
-}
+};
+
+export type BackendError = ErrorNoticeBase & {
+  severity: 'ERROR' | 'FATAL' | 'PANIC';
+};
+
+export type BackendNotice = ErrorNoticeBase & {
+  severity: 'WARNING' | 'NOTICE' | 'DEBUG' | 'INFO' | 'LOG';
+};
 
 /**
  * Creates a backend error message
@@ -115,4 +124,66 @@ export function createBackendErrorMessage(error: BackendError) {
   writer.addCString('');
 
   return writer.flush(BackendMessageCode.ErrorMessage);
+}
+
+export function readNoticeResponse(message: Buffer) {
+  const reader = new BufferReader();
+  reader.setBuffer(0, message);
+
+  const code = reader.byte();
+  const length = reader.int32();
+
+  const notice: Partial<BackendNotice> = {};
+
+  // biome-ignore lint/suspicious/noAssignInExpressions: <explanation>
+  for (let fieldCode: string; (fieldCode = reader.string(1)) !== '\0'; ) {
+    const fieldName = getFieldName(fieldCode);
+    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+    notice[fieldName] = reader.cstring() as any;
+  }
+
+  return notice as BackendNotice;
+}
+
+function getFieldName(code: string): keyof ErrorNoticeBase {
+  switch (code) {
+    case 'S':
+      return 'severity';
+    case 'V':
+      return 'severity';
+    case 'C':
+      return 'code';
+    case 'M':
+      return 'message';
+    case 'D':
+      return 'detail';
+    case 'H':
+      return 'hint';
+    case 'P':
+      return 'position';
+    case 'p':
+      return 'internalPosition';
+    case 'q':
+      return 'internalQuery';
+    case 'W':
+      return 'where';
+    case 's':
+      return 'schema';
+    case 't':
+      return 'table';
+    case 'c':
+      return 'column';
+    case 'd':
+      return 'dataType';
+    case 'n':
+      return 'constraint';
+    case 'F':
+      return 'file';
+    case 'L':
+      return 'line';
+    case 'R':
+      return 'routine';
+    default:
+      throw new Error(`Unknown error/notice code '${code}'`);
+  }
 }

@@ -4,3 +4,4 @@ dbs/
 *.pem
 *.srl
 tsconfig.tsbuildinfo
+.DS_Store

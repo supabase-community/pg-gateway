@@ -48,3 +48,15 @@ export const BackendMessageCode = {
   CopyDone: 0x63, // c
   CopyData: 0x64, // d
 } as const;
+
+export function getFrontendMessageName(code: number) {
+  return Object.entries(FrontendMessageCode).find(
+    ([_, value]) => value === code,
+  )?.[0] as keyof typeof FrontendMessageCode | undefined;
+}
+
+export function getBackendMessageName(code: number) {
+  return Object.entries(BackendMessageCode).find(
+    ([_, value]) => value === code,
+  )?.[0] as keyof typeof BackendMessageCode | undefined;
+}

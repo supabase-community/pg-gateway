@@ -8,6 +8,7 @@ import { type AuthOptions, createAuthFlow } from './auth/index.js';
 import {
   type BackendError,
   createBackendErrorMessage,
+  readNoticeResponse,
 } from './backend-error.js';
 import {
   type ClientInfo,
@@ -16,8 +17,14 @@ import {
   type TlsInfo,
 } from './connection.types.js';
 import { MessageBuffer } from './message-buffer.js';
-import { BackendMessageCode, FrontendMessageCode } from './message-codes.js';
+import {
+  BackendMessageCode,
+  FrontendMessageCode,
+  getBackendMessageName,
+  getFrontendMessageName,
+} from './message-codes.js';
 import { upgradeTls } from './tls.js';
+import { inspect } from 'node:util';
 
 export type TlsOptions = {
   key: Buffer;
@@ -214,6 +221,16 @@ export default class PostgresConnection {
   }
 
   async handleClientMessage(message: Buffer): Promise<void> {
+    {
+      const code = message[0] as number;
+      const messageName = getFrontendMessageName(code);
+
+      console.log(
+        `Frontend message '${messageName}'`,
+        inspect(Buffer.from(message), { maxArrayLength: 10 }),
+      );
+    }
+
     this.reader.setBuffer(0, message);
 
     this.socket.pause();
@@ -232,7 +249,7 @@ export default class PostgresConnection {
       for await (const responseData of iterableResponse) {
         // Skip built-in processing if any response data is sent
         skipProcessing = true;
-        this.sendData(responseData);
+        await this.sendData(responseData);
       }
     }
 
@@ -257,7 +274,7 @@ export default class PostgresConnection {
         } else if (this.isStartupMessage(message)) {
           // Guard against SSL connection not being established when `tls` is enabled
           if (this.options.tls && !this.secureSocket) {
-            this.sendError({
+            await this.sendError({
               severity: 'FATAL',
               code: '08P01',
               message: 'SSL connection is required',
@@ -266,7 +283,7 @@ export default class PostgresConnection {
             return;
           }
           // the next step is determined by handleStartupMessage
-          this.handleStartupMessage(message);
+          await this.handleStartupMessage(message);
         } else {
           throw new Error('Unexpected initial message');
         }
@@ -291,14 +308,14 @@ export default class PostgresConnection {
     if (!this.options.tls) {
       this.writer.addString('N');
       const result = this.writer.flush();
-      this.sendData(result);
+      await this.sendData(result);
       return;
     }
 
     // Otherwise respond with 'S' to indicate it is supported
     this.writer.addString('S');
     const result = this.writer.flush();
-    this.sendData(result);
+    await this.sendData(result);
 
     // From now on the frontend will communicate via TLS, so upgrade the connection
     await this.upgradeToTls(this.options.tls);
@@ -310,7 +327,7 @@ export default class PostgresConnection {
 
     // user is required
     if (!parameters.user) {
-      this.sendError({
+      await this.sendError({
         severity: 'FATAL',
         code: '08000',
         message: 'user is required',
@@ -320,7 +337,7 @@ export default class PostgresConnection {
     }
 
     if (majorVersion !== 3 || minorVersion !== 0) {
-      this.sendError({
+      await this.sendError({
         severity: 'FATAL',
         code: '08000',
         message: `Unsupported protocol version ${majorVersion.toString()}.${minorVersion.toString()}`,
@@ -397,19 +414,19 @@ export default class PostgresConnection {
 
     switch (code) {
       case FrontendMessageCode.Terminate:
-        this.handleTerminate(message);
+        await this.handleTerminate(message);
         break;
       default:
-        this.sendError({
+        await this.sendError({
           severity: 'ERROR',
           code: '123',
           message: 'Message code not yet implemented',
         });
-        this.sendReadyForQuery('idle');
+        await this.sendReadyForQuery('idle');
     }
   }
 
-  handleTerminate(message: Buffer) {
+  async handleTerminate(message: Buffer) {
     this.socket.end();
   }
 
@@ -538,8 +555,29 @@ export default class PostgresConnection {
   /**
    * Sends raw data to the frontend.
    */
-  sendData(data: Uint8Array) {
-    this.socket.write(data);
+  async sendData(data: Uint8Array) {
+    if (this.hasStarted) {
+      for await (const responseMessage of getMessages(data)) {
+        const code = responseMessage[0] as number;
+        const messageName = getBackendMessageName(code);
+        console.log(
+          `Backend message '${messageName}'`,
+          inspect(Buffer.from(responseMessage), { maxArrayLength: 10 }),
+        );
+        if (messageName === 'NoticeMessage') {
+          const notice = readNoticeResponse(Buffer.from(responseMessage));
+          console.log('Notice', notice);
+        }
+        if (messageName === 'ErrorMessage') {
+          const notice = readNoticeResponse(Buffer.from(responseMessage));
+          console.log('Error', notice);
+        }
+      }
+    }
+
+    await new Promise<void>((resolve, reject) =>
+      this.socket.write(data, (err) => (err ? reject(err) : resolve())),
+    );
   }
 
   /**
@@ -547,12 +585,12 @@ export default class PostgresConnection {
    *
    * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONOK
    */
-  sendAuthenticationOk() {
+  async sendAuthenticationOk() {
     this.writer.addInt32(0);
     const response = this.writer.flush(
       BackendMessageCode.AuthenticationResponse,
     );
-    this.sendData(response);
+    await this.sendData(response);
   }
 
   /**
@@ -562,11 +600,11 @@ export default class PostgresConnection {
    * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-PARAMETERSTATUS
    * @see https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-ASYNC
    */
-  sendParameterStatus(name: string, value: string) {
+  async sendParameterStatus(name: string, value: string) {
     this.writer.addCString(name);
     this.writer.addCString(value);
     const response = this.writer.flush(BackendMessageCode.ParameterStatus);
-    this.sendData(response);
+    await this.sendData(response);
   }
 
   /**
@@ -574,7 +612,7 @@ export default class PostgresConnection {
    *
    * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-READYFORQUERY
    */
-  sendReadyForQuery(
+  async sendReadyForQuery(
     transactionStatus: 'idle' | 'transaction' | 'error' = 'idle',
   ) {
     switch (transactionStatus) {
@@ -592,7 +630,7 @@ export default class PostgresConnection {
     }
 
     const response = this.writer.flush(BackendMessageCode.ReadyForQuery);
-    this.sendData(response);
+    await this.sendData(response);
   }
 
   /**
@@ -602,18 +640,33 @@ export default class PostgresConnection {
    *
    * For error fields, see https://www.postgresql.org/docs/current/protocol-error-fields.html#PROTOCOL-ERROR-FIELDS
    */
-  sendError(error: BackendError) {
+  async sendError(error: BackendError) {
     const errorMessage = createBackendErrorMessage(error);
-    this.sendData(errorMessage);
+    await this.sendData(errorMessage);
   }
 
-  sendAuthenticationFailedError() {
-    this.sendError({
+  async sendAuthenticationFailedError() {
+    await this.sendError({
       severity: 'FATAL',
       code: '28P01',
       message: this.clientInfo?.parameters.user
         ? `password authentication failed for user "${this.clientInfo.parameters.user}"`
         : 'password authentication failed',
     });
+  }
+}
+
+export function* getMessages(data: Uint8Array) {
+  const dataView = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let offset = 0;
+
+  if (dataView.byteLength === 0) {
+    return;
+  }
+
+  while (offset < dataView.byteLength) {
+    const length = dataView.getUint32(offset + 1);
+    yield data.subarray(offset, offset + length + 1);
+    offset += length + 1;
   }
 }
