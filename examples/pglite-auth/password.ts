@@ -20,7 +20,6 @@ const server = net.createServer(async (socket) => {
       //   return password.toUpperCase() === clearTextPassword.toUpperCase();
       // },
     },
-
     async onStartup() {
       // Wait for PGlite to be ready before further processing
       await db.waitReady;

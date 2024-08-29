@@ -14,7 +14,6 @@ const server = net.createServer(async (socket) => {
         return createPreHashedPassword(username, 'postgres');
       },
     },
-
     async onStartup() {
       // Wait for PGlite to be ready before further processing
       await db.waitReady;
