@@ -309,24 +309,42 @@ const connection = new PostgresConnection(socket, {
 
 ### `onMessage()`
 
-This hook gives you access to raw messages at any point in the protocol lifecycle.
+This hook gives you access to raw messages at any point in the protocol lifecycle:
+
+```typescript
+const connection = new PostgresConnection(socket, {
+  async onMessage(data, state) {
+    // Observe or handle raw messages yourself
+  },
+});
+```
 
 1. The first argument contains the raw `Buffer` data in the message
 2. The second argument contains a [`state`](#state) object which holds connection information gathered so far and can be used to understand where the protocol is at in its lifecycle.
 
-The callback should return `true` to indicate that you have handled the message response yourself and that no further processing should be done. Returning `false` will result in further processing by the `PostgresConnection`. The callback can be either synchronous or asynchronous.
-
-> **Warning:** By managing the message yourself (returning `true`), you bypass further processing by the `PostgresConnection` which means some state may not be collected and hooks won't be called depending on where the protocol is at in its lifecycle.
+The callback can optionally return raw `Uint8Array` response data that will be sent back to the client:
 
 ```typescript
 const connection = new PostgresConnection(socket, {
-  async onMessage(data, { hasStarted, isAuthenticated }) {
-    // Handle raw messages yourself
-
-    return false;
+  async onMessage(data, state) {
+    return new Uint8Array(...);
   },
 });
 ```
+
+It can also return multiple `Uint8Array` responses via an `Iterable<Uint8Array>` or `AsyncIterable<Uint8Array>`. This means you can turn this hook into a generator function to asynchronously stream responses back to the client:
+
+```typescript
+const connection = new PostgresConnection(socket, {
+  async *onMessage(data, state) {
+    yield new Uint8Array(...);;
+    await new Promise((r) => setTimeout(r, 1000));
+    yield new Uint8Array(...);;
+  },
+});
+```
+
+> **Warning:** By managing the message yourself (returning data), you bypass further processing by the `PostgresConnection` which means some state may not be collected and hooks won't be called depending on where the protocol is at in its lifecycle. If you wish to hook into messages without bypassing further processing, do not return any data from this callback.
 
 See [PGlite](#pglite) for an example on how you might use this.
 
@@ -410,14 +428,11 @@ const server = net.createServer((socket) => {
     async onMessage(data, { isAuthenticated }) {
       // Only forward messages to PGlite after authentication
       if (!isAuthenticated) {
-        return false;
+        return;
       }
 
-      // Forward raw message to PGlite
-      const responseData = await db.execProtocolRaw(data);
-      connection.sendData(responseData);
-
-      return true;
+      // Forward raw message to PGlite and send response to client
+      return await db.execProtocolRaw(data);
     },
   });
 

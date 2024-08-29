@@ -26,14 +26,11 @@ const server = net.createServer((socket) => {
     async onMessage(data, { isAuthenticated }) {
       // Only forward messages to PGlite after authentication
       if (!isAuthenticated) {
-        return false;
+        return;
       }
 
-      // Forward raw message to PGlite
-      const responseData = await db.execProtocolRaw(data);
-      connection.sendData(responseData);
-
-      return true;
+      // Forward raw message to PGlite and send response to client
+      return await db.execProtocolRaw(data);
     },
   });
 
