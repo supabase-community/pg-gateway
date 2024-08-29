@@ -13,18 +13,14 @@ async function startServer(listener: Deno.TcpListener) {
   for await (const conn of listener) {
     const db = new PGlite();
 
-    fromDenoConn(conn, {
+    await fromDenoConn(conn, {
       async onStartup() {
-        // Wait for PGlite to be ready before further processing
         await db.waitReady;
       },
       async onMessage(data, { isAuthenticated }) {
-        // Only forward messages to PGlite after authentication
         if (!isAuthenticated) {
           return;
         }
-
-        // Forward raw message to PGlite and send response to client
         return await db.execProtocolRaw(data);
       },
     });
@@ -32,13 +28,13 @@ async function startServer(listener: Deno.TcpListener) {
 }
 
 async function connect() {
-  const client = new Client('postgresql://postgres:postgres@localhost:5432/postgres');
+  const client = new Client('postgresql://postgres:postgres@localhost:54320/postgres');
   await client.connect();
   return client;
 }
 
 beforeAll(() => {
-  listener = Deno.listen({ port: 5432 });
+  listener = Deno.listen({ port: 54320 });
   startServer(listener);
 });
 

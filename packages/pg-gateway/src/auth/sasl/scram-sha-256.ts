@@ -229,7 +229,8 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
 
   async createServerFinalMessage(message: BufferSource) {
     const length = this.reader.int32();
-    const clientFinalMessage = this.reader.string(length);
+    const stringLength = length - 4; // length includes header
+    const clientFinalMessage = this.reader.string(stringLength);
     const clientFinalMessageParts = clientFinalMessage.split(',');
     const channelBinding = clientFinalMessageParts
       .find((part) => part.startsWith('c='))

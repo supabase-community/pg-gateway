@@ -10,14 +10,16 @@ export async function fromWebSocketStream(
   wss: WebSocketStream,
   options?: PostgresConnectionOptions,
 ) {
-  const duplex = await webSocketStreamToDuplex(wss);
+  const duplex = await webDuplexFromWebSocketStream(wss);
   return new PostgresConnection(duplex, options);
 }
 
 /**
  * Creates a `Duplex` binary web stream from a `WebSocketStream`.
  */
-export async function webSocketStreamToDuplex(wss: WebSocketStream): Promise<Duplex<Uint8Array>> {
+export async function webDuplexFromWebSocketStream(
+  wss: WebSocketStream,
+): Promise<Duplex<Uint8Array>> {
   const { readable, writable } = await wss.opened;
 
   return {

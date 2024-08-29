@@ -33,7 +33,8 @@
   "scripts": {
     "dev": "tsx examples/pglite/index.ts",
     "build": "tsup --clean",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest",
+    "test:deno": "deno test --allow-net --allow-read test/deno",
     "prepublishOnly": "npm run build",
     "format": "biome format --write .",
     "lint": "biome lint --error-on-warnings .",
@@ -46,12 +47,14 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.8.3",
+    "@electric-sql/pglite": "^0.2.4",
     "@total-typescript/tsconfig": "^1.0.4",
     "@types/node": "^20.14.11",
     "pg": "^8.12.0",
     "pg-protocol": "^1.6.1",
     "tsup": "^8.2.3",
     "tsx": "^4.16.2",
-    "typescript": "^5.5.3"
+    "typescript": "^5.5.3",
+    "vitest": "^2.0.5"
   }
 }
