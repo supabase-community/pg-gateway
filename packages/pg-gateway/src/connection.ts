@@ -197,7 +197,7 @@ export default class PostgresConnection {
   }
 
   async *handleClientMessage(message: Uint8Array) {
-    this.reader.setBuffer(0, message);
+    this.reader.setBuffer(message);
 
     let skipProcessing = false;
     const messageResponse = await this.options.onMessage?.(message, this.state);
@@ -399,10 +399,10 @@ export default class PostgresConnection {
    *
    * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-SSLREQUEST
    */
-  private isSslRequest(message: ArrayBuffer): boolean {
+  private isSslRequest(message: Uint8Array): boolean {
     if (message.byteLength !== 8) return false;
 
-    const dataView = new DataView(message);
+    const dataView = new DataView(message.buffer, message.byteOffset, message.byteLength);
 
     const mostSignificantPart = dataView.getInt16(4);
     const leastSignificantPart = dataView.getInt16(6);
@@ -415,10 +415,10 @@ export default class PostgresConnection {
    *
    * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-STARTUPMESSAGE
    */
-  private isStartupMessage(message: ArrayBuffer): boolean {
+  private isStartupMessage(message: Uint8Array): boolean {
     if (message.byteLength < 8) return false;
 
-    const dataView = new DataView(message);
+    const dataView = new DataView(message.buffer, message.byteOffset, message.byteLength);
 
     const length = dataView.getInt32(0);
     const majorVersion = dataView.getInt16(4);
