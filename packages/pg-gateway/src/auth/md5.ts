@@ -14,7 +14,7 @@ export type Md5AuthOptions = {
     credentials: {
       username: string;
       preHashedPassword: string;
-      salt: BufferSource;
+      salt: Uint8Array;
       hashedPassword: string;
     },
     connectionState: ConnectionState,
@@ -54,7 +54,7 @@ export class Md5AuthFlow extends BaseAuthFlow {
     this.salt = generateMd5Salt();
   }
 
-  async *handleClientMessage(message: BufferSource) {
+  async *handleClientMessage(message: Uint8Array) {
     const length = this.reader.int32();
     const hashedPassword = this.reader.cstring();
 
@@ -112,22 +112,15 @@ export class Md5AuthFlow extends BaseAuthFlow {
  *
  * @see https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-START-UP
  */
-export async function hashPreHashedPassword(preHashedPassword: string, salt: BufferSource) {
-  const hash = await md5(
-    concat([
-      new TextEncoder().encode(preHashedPassword),
-      salt instanceof ArrayBuffer
-        ? new Uint8Array(salt)
-        : new Uint8Array(salt.buffer, salt.byteOffset, salt.byteLength),
-    ]),
-  );
+export async function hashPreHashedPassword(preHashedPassword: string, salt: Uint8Array) {
+  const hash = await md5(concat([new TextEncoder().encode(preHashedPassword), salt]));
   return `md5${hash}`;
 }
 
 /**
  * Computes the MD5 hash of the given value.
  */
-export async function md5(value: string | BufferSource) {
+export async function md5(value: string | Uint8Array) {
   const hash = await crypto.subtle.digest(
     'MD5',
     typeof value === 'string' ? new TextEncoder().encode(value) : value,
