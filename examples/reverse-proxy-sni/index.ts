@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import net, { connect } from 'node:net';
+import { Duplex } from 'node:stream';
 import type { TlsOptionsCallback } from 'pg-gateway';
-import { fromNodeSocket, webDuplexToNodeDuplex } from 'pg-gateway/node';
+import { fromNodeSocket } from 'pg-gateway/node';
 
 const tls: TlsOptionsCallback = async ({ sniServerName }) => {
   // Optionally serve different certs based on `sniServerName`
@@ -67,7 +68,7 @@ const server = net.createServer(async (socket) => {
 
       // Detach from the `PostgresConnection` to prevent further buffering/processing
       const duplex = await connection.detach();
-      const nodeDuplex = await webDuplexToNodeDuplex(duplex);
+      const nodeDuplex = Duplex.fromWeb(duplex);
 
       // Pipe data directly between sockets
       proxySocket.pipe(nodeDuplex);
