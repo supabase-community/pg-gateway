@@ -1,20 +1,20 @@
+import { Duplex } from 'node:stream';
 import { TLSSocket, type TLSSocketOptions, createSecureContext } from 'node:tls';
 import type { TlsOptions, TlsOptionsCallback } from '../../connection.js';
 import type { TlsInfo } from '../../connection.types.js';
-import type { Duplex } from '../../duplex.js';
-import { nodeDuplexFromWebDuplex, webDuplexFromNodeDuplex } from './index.js';
+import type { DuplexStream } from '../../duplex.js';
 
 export async function upgradeTls(
-  duplex: Duplex<Uint8Array>,
+  duplex: DuplexStream<Uint8Array>,
   options: TlsOptions | TlsOptionsCallback,
   tlsInfo: TlsInfo = {},
   requestCert = false,
 ): Promise<{
-  duplex: Duplex<Uint8Array>;
+  duplex: DuplexStream<Uint8Array>;
   tlsInfo: TlsInfo;
 }> {
   const tlsSocketOptions = await createTlsSocketOptions(options, tlsInfo, requestCert);
-  const nodeDuplex = await nodeDuplexFromWebDuplex(duplex);
+  const nodeDuplex = Duplex.fromWeb(duplex);
 
   const secureSocket = new TLSSocket(nodeDuplex, {
     ...tlsSocketOptions,
@@ -34,7 +34,7 @@ export async function upgradeTls(
   });
 
   return {
-    duplex: await webDuplexFromNodeDuplex(nodeDuplex),
+    duplex: Duplex.toWeb(nodeDuplex),
     // clientCertificate: secureSocket.getPeerCertificate(),
     tlsInfo,
   };

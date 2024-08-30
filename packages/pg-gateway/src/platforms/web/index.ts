@@ -1,5 +1,5 @@
 import PostgresConnection, { type PostgresConnectionOptions } from '../../connection.js';
-import type { Duplex } from '../../duplex.js';
+import type { DuplexStream } from '../../duplex.js';
 
 /**
  * Creates a `PostgresConnection` from a `WebSocketStream`.
@@ -10,16 +10,16 @@ export async function fromWebSocketStream(
   wss: WebSocketStream,
   options?: PostgresConnectionOptions,
 ) {
-  const duplex = await webDuplexFromWebSocketStream(wss);
+  const duplex = await duplexFromWebSocketStream(wss);
   return new PostgresConnection(duplex, options);
 }
 
 /**
- * Creates a `Duplex` binary web stream from a `WebSocketStream`.
+ * Creates a `DuplexStream<Uint8Array>` from a `WebSocketStream`.
  */
-export async function webDuplexFromWebSocketStream(
+export async function duplexFromWebSocketStream(
   wss: WebSocketStream,
-): Promise<Duplex<Uint8Array>> {
+): Promise<DuplexStream<Uint8Array>> {
   const { readable, writable } = await wss.opened;
 
   return {

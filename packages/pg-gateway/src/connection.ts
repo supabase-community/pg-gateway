@@ -9,7 +9,7 @@ import {
   ServerStep,
   type TlsInfo,
 } from './connection.types.js';
-import type { Duplex } from './duplex.js';
+import type { DuplexStream } from './duplex.js';
 import { MessageBuffer } from './message-buffer.js';
 import { BackendMessageCode, FrontendMessageCode } from './message-codes.js';
 
@@ -45,12 +45,12 @@ export type PostgresConnectionOptions = {
    * instead use `fromNodeSocket()` helper.
    */
   upgradeTls?(
-    duplex: Duplex<Uint8Array>,
+    duplex: DuplexStream<Uint8Array>,
     options: TlsOptions | TlsOptionsCallback,
     tlsInfo?: TlsInfo,
     requestCert?: boolean,
   ): Promise<{
-    duplex: Duplex<Uint8Array>;
+    duplex: DuplexStream<Uint8Array>;
     tlsInfo: TlsInfo;
   }>;
 
@@ -138,7 +138,7 @@ export default class PostgresConnection {
   messageBuffer = new MessageBuffer();
 
   constructor(
-    public duplex: Duplex<Uint8Array>,
+    public duplex: DuplexStream<Uint8Array>,
     options: PostgresConnectionOptions = {},
   ) {
     this.options = {
