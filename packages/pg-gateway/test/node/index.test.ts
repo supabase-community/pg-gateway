@@ -1,8 +1,8 @@
 import { PGlite } from '@electric-sql/pglite';
 import net from 'node:net';
 import pg, { type ClientConfig } from 'pg';
+import { fromNodeSocket } from 'pg-gateway/node';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { fromNodeSocket } from '../../dist/platforms/node';
 
 const { Client } = pg;
 
