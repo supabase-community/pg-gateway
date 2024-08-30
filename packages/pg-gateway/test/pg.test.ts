@@ -1,15 +1,14 @@
 import { PGlite } from '@electric-sql/pglite';
-import { type Duplex, EventEmitter } from 'node:stream';
-import { setTimeout } from 'node:timers/promises';
 import pg from 'pg';
-import { createDuplexPair, type DuplexStream, PostgresConnection } from 'pg-gateway';
+import { PostgresConnection, createDuplexPair } from 'pg-gateway';
 import { describe, expect, it } from 'vitest';
+import { socketFromDuplexStream } from './pg';
 
 const { Client } = pg;
 
 /**
- * Creates a one-time `PostgresConnection` and links to an
- * in-memory client `DuplexStream`.
+ * Creates a one-time `PostgresConnection` and links to a
+ * `pg` client via in-memory duplex streams.
  */
 async function connect() {
   const [clientDuplex, serverDuplex] = createDuplexPair<Uint8Array>();
@@ -28,14 +27,13 @@ async function connect() {
     },
   });
 
-  const client = new Client({
-    stream: () => new DuplexStreamSocket(clientDuplex) as unknown as Duplex,
-  });
+  const client = new Client({ stream: socketFromDuplexStream(clientDuplex) });
   await client.connect();
+
   return client;
 }
 
-describe('pglite', () => {
+describe('pg client with pglite', () => {
   it('simple query returns result', async () => {
     const client = await connect();
     const res = await client.query("select 'Hello world!' as message");
@@ -44,65 +42,3 @@ describe('pglite', () => {
     await client.end();
   });
 });
-
-class DuplexStreamSocket extends EventEmitter {
-  writer: WritableStreamDefaultWriter;
-  writable = false;
-  destroyed = false;
-
-  constructor(public duplex: DuplexStream<Uint8Array>) {
-    super();
-    this.writer = duplex.writable.getWriter();
-  }
-
-  private async emitData() {
-    for await (const chunk of this.duplex.readable) {
-      this.emit('data', Buffer.from(chunk));
-    }
-  }
-
-  async connect() {
-    this.emitData();
-
-    // Yield to the event loop
-    await setTimeout();
-
-    this.writable = true;
-    this.emit('connect');
-  }
-
-  async write(data: Buffer, callback?: () => void) {
-    await this.writer.write(new Uint8Array(data));
-    callback?.();
-  }
-
-  end() {
-    this.writable = false;
-    this.emit('close');
-  }
-
-  destroy() {
-    this.destroyed = true;
-    this.end();
-  }
-
-  startTls() {
-    throw new Error('TLS not supported in in-memory connection');
-  }
-
-  setNoDelay() {
-    return this;
-  }
-
-  setKeepAlive() {
-    return this;
-  }
-
-  ref() {
-    return this;
-  }
-
-  unref() {
-    return this;
-  }
-}
