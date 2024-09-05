@@ -4,6 +4,7 @@ import type { BufferReader } from '../buffer-reader.js';
 import type { BufferWriter } from '../buffer-writer.js';
 import type { ConnectionState } from '../connection.types';
 import { BaseAuthFlow } from './base-auth-flow';
+import { closeSignal } from '../connection.js';
 
 export type CertAuthOptions = {
   method: 'cert';
@@ -50,7 +51,8 @@ export class CertAuthFlow extends BaseAuthFlow {
         code: '08000',
         message: `ssl connection required when auth mode is 'certificate'`,
       });
-      throw new Error('end socket');
+      yield closeSignal;
+      return;
     }
 
     // biome-ignore lint/correctness/noConstantCondition: TODO: detect if cert authorized
@@ -60,7 +62,8 @@ export class CertAuthFlow extends BaseAuthFlow {
         code: '08000',
         message: 'client certificate is invalid',
       });
-      throw new Error('end socket');
+      yield closeSignal;
+      return;
     }
 
     // TODO: get peer cert and validate through hook
@@ -80,7 +83,8 @@ export class CertAuthFlow extends BaseAuthFlow {
         code: '08000',
         message: 'client certificate is invalid',
       });
-      throw new Error('end socket');
+      yield closeSignal;
+      return;
     }
 
     this.completed = true;

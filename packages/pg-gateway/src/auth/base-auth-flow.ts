@@ -1,10 +1,11 @@
 import type { BufferReader } from '../buffer-reader.js';
 import type { BufferWriter } from '../buffer-writer.js';
+import type { ConnectionSignal } from '../connection.js';
 import type { ConnectionState } from '../connection.types.js';
 
 export interface AuthFlow {
   createInitialAuthMessage(): Uint8Array | undefined;
-  handleClientMessage(message: BufferSource): AsyncGenerator<Uint8Array>;
+  handleClientMessage(message: BufferSource): AsyncGenerator<Uint8Array | ConnectionSignal>;
   isCompleted: boolean;
 }
 
@@ -24,6 +25,8 @@ export abstract class BaseAuthFlow implements AuthFlow {
   }
 
   abstract createInitialAuthMessage(): Uint8Array | undefined;
-  abstract handleClientMessage(message: BufferSource): AsyncGenerator<Uint8Array>;
+  abstract handleClientMessage(
+    message: BufferSource,
+  ): AsyncGenerator<Uint8Array | ConnectionSignal>;
   abstract get isCompleted(): boolean;
 }

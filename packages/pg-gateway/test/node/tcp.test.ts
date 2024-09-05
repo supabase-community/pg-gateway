@@ -1,8 +1,9 @@
 import { PGlite } from '@electric-sql/pglite';
 import net from 'node:net';
 import pg, { type ClientConfig } from 'pg';
+import { fromNodeSocket } from 'pg-gateway/node';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { fromNodeSocket } from '../../dist/platforms/node';
+import { PGliteExtendedQueryPatch } from '../util';
 
 const { Client } = pg;
 
@@ -20,7 +21,7 @@ beforeAll(() => {
   server = net.createServer(async (socket) => {
     const db = new PGlite();
 
-    await fromNodeSocket(socket, {
+    const connection = await fromNodeSocket(socket, {
       async onStartup() {
         await db.waitReady;
       },
@@ -28,9 +29,14 @@ beforeAll(() => {
         if (!isAuthenticated) {
           return;
         }
-        return await db.execProtocolRaw(data);
+
+        // Send message to PGlite
+        const response = await db.execProtocolRaw(data);
+        return extendedQueryPatch.filterResponse(data, response);
       },
     });
+
+    const extendedQueryPatch = new PGliteExtendedQueryPatch(connection);
   });
 
   server.listen(54320);
@@ -44,6 +50,14 @@ describe('pglite', () => {
   it('simple query returns result', async () => {
     const client = await connect();
     const res = await client.query("select 'Hello world!' as message");
+    const [{ message }] = res.rows;
+    expect(message).toBe('Hello world!');
+    await client.end();
+  });
+
+  it('extended query returns result', async () => {
+    const client = await connect();
+    const res = await client.query('SELECT $1::text as message', ['Hello world!']);
     const [{ message }] = res.rows;
     expect(message).toBe('Hello world!');
     await client.end();

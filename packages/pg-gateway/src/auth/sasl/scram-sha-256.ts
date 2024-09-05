@@ -2,6 +2,7 @@ import { decodeBase64, encodeBase64 } from '@std/encoding/base64';
 import { createBackendErrorMessage } from '../../backend-error.js';
 import type { BufferReader } from '../../buffer-reader.js';
 import type { BufferWriter } from '../../buffer-writer.js';
+import { closeSignal } from '../../connection.js';
 import type { ConnectionState } from '../../connection.types';
 import { createHashKey, createHmacKey, pbkdf2, timingSafeEqual } from '../../crypto.js';
 import type { AuthFlow } from '../base-auth-flow';
@@ -176,7 +177,8 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
         code: '28000',
         message: 'Unsupported SASL authentication mechanism',
       });
-      throw new Error('end socket');
+      yield closeSignal;
+      return;
     }
 
     const responseLength = this.reader.int32();
@@ -219,7 +221,8 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
         code: '28000',
         message: (error as Error).message,
       });
-      throw new Error('end socket');
+      yield closeSignal;
+      return;
     }
   }
 

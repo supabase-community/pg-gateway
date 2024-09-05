@@ -10,8 +10,14 @@ import {
   type TlsInfo,
 } from './connection.types.js';
 import type { DuplexStream } from './duplex.js';
-import { MessageBuffer } from './message-buffer.js';
-import { BackendMessageCode, FrontendMessageCode } from './message-codes.js';
+import { AsyncIterableWithMetadata } from './iterable-util.js';
+import { getMessages, MessageBuffer } from './message-buffer.js';
+import {
+  BackendMessageCode,
+  FrontendMessageCode,
+  getBackendMessageName,
+  getFrontendMessageName,
+} from './message-codes.js';
 
 export type TlsOptions = {
   key: ArrayBuffer;
@@ -122,6 +128,10 @@ export type MessageResponse =
   | Iterable<Uint8Array>
   | AsyncIterable<Uint8Array>;
 
+export const closeSignal = Symbol('close');
+export type CloseSignal = typeof closeSignal;
+export type ConnectionSignal = CloseSignal;
+
 export default class PostgresConnection {
   private step: ServerStep = ServerStep.AwaitingInitialMessage;
   options: PostgresConnectionOptions & {
@@ -175,45 +185,59 @@ export default class PostgresConnection {
   }
 
   async processData() {
-    try {
-      const writer = this.duplex.writable.getWriter();
-
-      for await (const data of this.duplex.readable) {
-        this.messageBuffer.mergeBuffer(data);
-        for await (const clientMessage of this.messageBuffer.processMessages(this.hasStarted)) {
-          console.log('got message', clientMessage);
-          for await (const responseMessage of this.handleClientMessage(clientMessage)) {
-            await writer.write(responseMessage);
+    const writer = this.duplex.writable.getWriter();
+    for await (const data of this.duplex.readable) {
+      this.messageBuffer.mergeBuffer(data);
+      for await (const clientMessage of this.messageBuffer.processMessages(this.hasStarted)) {
+        console.debug('Frontend message', getFrontendMessageName(clientMessage[0]!), clientMessage);
+        for await (const responseMessage of this.handleClientMessage(clientMessage)) {
+          if (responseMessage === closeSignal) {
+            await writer.close();
+            return;
           }
-        }
-        // TODO: anywhere else we need to check for this?
-        if (this.detached) {
-          return;
+          for await (const msg of getMessages(responseMessage)) {
+            if (msg[0] !== BackendMessageCode.NoticeMessage) {
+              console.debug('Backend message', getBackendMessageName(msg[0]!), msg);
+            }
+          }
+          await writer.write(responseMessage);
         }
       }
-    } catch (err) {
-      console.log('got error', err);
+      // TODO: anywhere else we need to check for this?
+      if (this.detached) {
+        return;
+      }
     }
   }
 
-  async *handleClientMessage(message: Uint8Array) {
+  async *handleClientMessage(
+    message: Uint8Array,
+  ): AsyncGenerator<Uint8Array | CloseSignal, void, undefined> {
     this.reader.setBuffer(message);
 
-    let skipProcessing = false;
     const messageResponse = await this.options.onMessage?.(message, this.state);
+
+    // Returning any value indicates no further processing
+    let skipProcessing = messageResponse !== undefined;
 
     // A `Uint8Array` or `Iterator<Uint8Array>` or `AsyncIterator<Uint8Array>`
     // can be returned that contains raw message response data
     if (messageResponse) {
-      const iterableResponse =
-        messageResponse instanceof Uint8Array ? [messageResponse] : messageResponse;
+      const iterableResponse = new AsyncIterableWithMetadata(
+        messageResponse instanceof Uint8Array ? [messageResponse] : messageResponse,
+      );
 
-      // Asynchronously stream responses back to client
-      for await (const responseData of iterableResponse) {
-        // Skip built-in processing if any response data is sent
-        skipProcessing = true;
-        yield responseData;
+      // Forward yielded responses back to client
+      yield* iterableResponse;
+
+      // Yield any `Uint8Array` values returned from the iterator
+      if (iterableResponse.returnValue instanceof Uint8Array) {
+        yield iterableResponse.returnValue;
       }
+
+      // Yielding or returning any value within the iterator indicates no further processing
+      skipProcessing =
+        iterableResponse.iterations > 0 || iterableResponse.returnValue !== undefined;
     }
 
     // the socket was detached during onMessage, we skip further processing
@@ -240,7 +264,8 @@ export default class PostgresConnection {
               code: '08P01',
               message: 'SSL connection is required',
             });
-            throw new Error('end socket');
+            yield closeSignal;
+            return;
           }
           // the next step is determined by handleStartupMessage
           yield* this.handleStartupMessage(message);
@@ -303,7 +328,8 @@ export default class PostgresConnection {
         code: '08000',
         message: 'user is required',
       });
-      throw new Error('end socket');
+      yield closeSignal;
+      return;
     }
 
     if (majorVersion !== 3 || minorVersion !== 0) {
@@ -312,7 +338,8 @@ export default class PostgresConnection {
         code: '08000',
         message: `Unsupported protocol version ${majorVersion.toString()}.${minorVersion.toString()}`,
       });
-      throw new Error('end socket');
+      yield closeSignal;
+      return;
     }
 
     this.clientInfo = {
@@ -383,7 +410,8 @@ export default class PostgresConnection {
 
     switch (code) {
       case FrontendMessageCode.Terminate:
-        throw new Error('end socket');
+        yield closeSignal;
+        return;
       default:
         yield createBackendErrorMessage({
           severity: 'ERROR',

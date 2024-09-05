@@ -66,14 +66,11 @@ export class MessageBuffer {
       const dataView = new DataView(this.buffer.buffer);
       const length = dataView.getUint32(offset + codeLength);
 
-      console.log('message length', length);
-
       // The length passed in the message header does not include the first single
       // byte code, so we account for it here
       const fullMessageLength = codeLength + length;
 
       if (offset + fullMessageLength <= bufferFullLength) {
-        console.log('we got the full message');
         yield this.buffer.subarray(offset, offset + fullMessageLength);
         offset += fullMessageLength;
       } else {
@@ -89,5 +86,20 @@ export class MessageBuffer {
       this.bufferLength = bufferFullLength - offset;
       this.bufferOffset = offset;
     }
+  }
+}
+
+export function* getMessages(data: Uint8Array) {
+  const dataView = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let offset = 0;
+
+  if (dataView.byteLength === 0) {
+    return;
+  }
+
+  while (offset < dataView.byteLength) {
+    const length = dataView.getUint32(offset + 1);
+    yield data.subarray(offset, offset + length + 1);
+    offset += length + 1;
   }
 }
