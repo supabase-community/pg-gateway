@@ -1,14 +1,20 @@
 import { PGlite } from '@electric-sql/pglite';
-import pg from 'pg';
 import { PostgresConnection, createDuplexPair } from 'pg-gateway';
+import Knex from '@nodeweb/knex';
+import { config } from '@nodeweb/knex/config';
+import pg from '@nodeweb/pg';
+import { socketFromDuplexStream } from '@nodeweb/pg/socket';
 import { describe, expect, it } from 'vitest';
-import { socketFromDuplexStream } from './pg';
 
-const { Client } = pg;
+config({
+  drivers: {
+    pg,
+  },
+});
 
 /**
  * Creates a one-time `PostgresConnection` and links to a
- * `pg` client via in-memory duplex streams.
+ * `knex` client via in-memory duplex streams.
  */
 async function connect() {
   const [clientDuplex, serverDuplex] = createDuplexPair<Uint8Array>();
@@ -27,18 +33,23 @@ async function connect() {
     },
   });
 
-  const client = new Client({ stream: socketFromDuplexStream(clientDuplex) });
-  await client.connect();
+  const knex = Knex({
+    client: 'pg',
+    connection: {
+      user: 'postgres',
+      stream: socketFromDuplexStream(clientDuplex),
+    },
+  });
 
-  return client;
+  return knex;
 }
 
-describe('pg client with pglite', () => {
+describe('knex client with pglite', () => {
   it('simple query returns result', async () => {
-    const client = await connect();
-    const res = await client.query("select 'Hello world!' as message");
+    const knex = await connect();
+    const res = await knex.raw("select 'Hello world!' as message");
     const [{ message }] = res.rows;
     expect(message).toBe('Hello world!');
-    await client.end();
+    await knex.destroy();
   });
 });

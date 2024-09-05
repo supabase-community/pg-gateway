@@ -1,4 +1,3 @@
-import { PGlite } from '@electric-sql/pglite';
 import { PostgresConnection, createDuplexPair, createScramSha256Data } from 'pg-gateway';
 import { serialize } from 'pg-protocol';
 import type { BackendMessage } from 'pg-protocol/dist/messages';
@@ -13,23 +12,12 @@ import { it } from 'vitest';
 function connect() {
   const [clientDuplex, serverDuplex] = createDuplexPair<Uint8Array>();
 
-  const db = new PGlite();
-
   new PostgresConnection(serverDuplex, {
     auth: {
       method: 'scram-sha-256',
       async getScramSha256Data() {
         return await createScramSha256Data('postgres');
       },
-    },
-    async onStartup() {
-      await db.waitReady;
-    },
-    async onMessage(data, { isAuthenticated }) {
-      if (!isAuthenticated) {
-        return;
-      }
-      return await db.execProtocolRaw(data);
     },
   });
 
