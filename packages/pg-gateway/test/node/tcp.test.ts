@@ -1,18 +1,24 @@
 import { PGlite } from '@electric-sql/pglite';
 import net from 'node:net';
 import pg, { type ClientConfig } from 'pg';
+import postgres from 'postgres';
 import { fromNodeSocket } from 'pg-gateway/node';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PGliteExtendedQueryPatch } from '../util';
 
 const { Client } = pg;
 
-async function connect(
+async function connectPg(
   config: string | ClientConfig = 'postgresql://postgres:postgres@localhost:54320/postgres',
 ) {
   const client = new Client(config);
   await client.connect();
   return client;
+}
+
+async function connectPostgres(config = 'postgresql://postgres:postgres@localhost:54320/postgres') {
+  const sql = postgres(config);
+  return sql;
 }
 
 let server: net.Server;
@@ -47,19 +53,36 @@ afterAll(() => {
 });
 
 describe('pglite', () => {
-  it('simple query returns result', async () => {
-    const client = await connect();
+  it('pg simple query returns result', async () => {
+    const client = await connectPg();
     const res = await client.query("select 'Hello world!' as message");
     const [{ message }] = res.rows;
     expect(message).toBe('Hello world!');
     await client.end();
   });
 
-  it('extended query returns result', async () => {
-    const client = await connect();
+  it('pg extended query returns result', async () => {
+    const client = await connectPg();
     const res = await client.query('SELECT $1::text as message', ['Hello world!']);
     const [{ message }] = res.rows;
     expect(message).toBe('Hello world!');
     await client.end();
+  });
+
+  it('postgres simple query returns result', async () => {
+    const sql = await connectPostgres();
+    const rows = await sql`select 'Hello world!' as message`.simple();
+    const [{ message }] = rows;
+    expect(message).toBe('Hello world!');
+    await sql.end();
+  });
+
+  it('postgres extended query returns result', async () => {
+    const sql = await connectPostgres();
+    const expectedMessage = 'Hello world!';
+    const rows = await sql`select ${expectedMessage} as message`;
+    const [{ message }] = rows;
+    expect(message).toBe(expectedMessage);
+    await sql.end();
   });
 });

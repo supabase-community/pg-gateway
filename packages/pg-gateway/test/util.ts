@@ -138,5 +138,7 @@ export class PGliteExtendedQueryPatch {
       }
       yield message;
     }
+
+    return null;
   }
 }
