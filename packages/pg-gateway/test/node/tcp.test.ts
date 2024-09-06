@@ -6,17 +6,17 @@ import { fromNodeSocket } from 'pg-gateway/node';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PGliteExtendedQueryPatch } from '../util';
 
-const { Client } = pg;
+const port = 54320;
+const connectionString = `postgresql://postgres:postgres@localhost:${port}/postgres`;
 
-async function connectPg(
-  config: string | ClientConfig = 'postgresql://postgres:postgres@localhost:54320/postgres',
-) {
+async function connectPg(config: string | ClientConfig = connectionString) {
+  const { Client } = pg;
   const client = new Client(config);
   await client.connect();
   return client;
 }
 
-async function connectPostgres(config = 'postgresql://postgres:postgres@localhost:54320/postgres') {
+async function connectPostgres(config = connectionString) {
   const sql = postgres(config);
   return sql;
 }
@@ -45,7 +45,7 @@ beforeAll(() => {
     const extendedQueryPatch = new PGliteExtendedQueryPatch(connection);
   });
 
-  server.listen(54320);
+  server.listen(port);
 });
 
 afterAll(() => {
