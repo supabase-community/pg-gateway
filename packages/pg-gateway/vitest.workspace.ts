@@ -5,7 +5,7 @@ export default defineWorkspace([
     test: {
       name: 'general',
       environment: 'node',
-      include: ['test/general/**/*.{test,spec}.ts'],
+      include: ['test/general/**/*.{test,spec}.ts', 'src/**/*.{test,spec}.ts'],
     },
   },
   {

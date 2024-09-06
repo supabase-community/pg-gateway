@@ -1,5 +1,5 @@
 import PostgresConnection, { type PostgresConnectionOptions } from '../../connection.js';
-import type { DuplexStream } from '../../duplex.js';
+import type { DuplexStream } from '../../streams.js';
 
 /**
  * Creates a `PostgresConnection` from a `WebSocketStream`.

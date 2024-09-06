@@ -2,7 +2,7 @@ import { Duplex } from 'node:stream';
 import { TLSSocket, type TLSSocketOptions, createSecureContext } from 'node:tls';
 import type { TlsOptions, TlsOptionsCallback } from '../../connection.js';
 import type { TlsInfo } from '../../connection.types.js';
-import type { DuplexStream } from '../../duplex.js';
+import type { DuplexStream } from '../../streams.js';
 
 export async function upgradeTls(
   duplex: DuplexStream<Uint8Array>,

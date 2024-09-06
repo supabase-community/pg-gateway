@@ -9,7 +9,7 @@ import {
   ServerStep,
   type TlsInfo,
 } from './connection.types.js';
-import type { DuplexStream } from './duplex.js';
+import type { DuplexStream } from './streams.js';
 import { AsyncIterableWithMetadata } from './iterable-util.js';
 import { getMessages, MessageBuffer } from './message-buffer.js';
 import {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDuplexPair, createVirtualServer } from './duplex';
+import { createDuplexPair, createVirtualServer } from './streams';
 
 describe('createDuplexPair', () => {
   it('should transfer data between duplex streams using Uint8Array', async () => {
