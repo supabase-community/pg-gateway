@@ -1,6 +1,7 @@
 import { createBackendErrorMessage } from '../backend-error.js';
 import type { BufferReader } from '../buffer-reader.js';
 import type { BufferWriter } from '../buffer-writer.js';
+import { closeSignal } from '../connection.js';
 import type { ConnectionState } from '../connection.types';
 import { BackendMessageCode } from '../message-codes';
 import { BaseAuthFlow } from './base-auth-flow';
@@ -76,7 +77,8 @@ export class PasswordAuthFlow extends BaseAuthFlow {
         code: '28P01',
         message: `password authentication failed for user "${this.username}"`,
       });
-      throw new Error('end socket');
+      yield closeSignal;
+      return;
     }
 
     this.completed = true;

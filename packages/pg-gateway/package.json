@@ -6,7 +6,9 @@
   "type": "module",
   "main": "dist/index.cjs",
   "types": "dist/index.d.ts",
-  "files": ["dist/**/*"],
+  "files": [
+    "dist/**/*"
+  ],
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -48,10 +50,16 @@
   "devDependencies": {
     "@biomejs/biome": "^1.8.3",
     "@electric-sql/pglite": "^0.2.4",
+    "@nodeweb/knex": "^3.1.0-alpha.11",
+    "@nodeweb/pg": "^8.12.0-alpha.2",
     "@total-typescript/tsconfig": "^1.0.4",
     "@types/node": "^20.14.11",
+    "@types/pg": "^8.11.8",
+    "@vitest/browser": "^2.0.5",
     "pg": "^8.12.0",
     "pg-protocol": "^1.6.1",
+    "playwright": "^1.46.1",
+    "postgres": "^3.4.4",
     "tsup": "^8.2.3",
     "tsx": "^4.16.2",
     "typescript": "^5.5.3",

@@ -27,8 +27,11 @@ export class BufferedStream<T> implements DuplexStream<T> {
     });
 
     this.writable = new WritableStream<T>({
-      write(chunk) {
+      async write(chunk) {
         buffer.push(chunk);
+
+        // Yield to the event loop
+        await new Promise<void>((resolve) => setTimeout(resolve));
       },
     });
   }
