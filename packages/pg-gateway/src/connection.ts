@@ -184,16 +184,10 @@ export default class PostgresConnection {
     for await (const data of toAsyncIterator(this.duplex.readable)) {
       this.messageBuffer.mergeBuffer(data);
       for await (const clientMessage of this.messageBuffer.processMessages(this.hasStarted)) {
-        console.debug('Frontend message', getFrontendMessageName(clientMessage[0]!), clientMessage);
         for await (const responseMessage of this.handleClientMessage(clientMessage)) {
           if (responseMessage === closeSignal) {
             await writer.close();
             return;
-          }
-          for await (const msg of getMessages(responseMessage)) {
-            if (msg[0] !== BackendMessageCode.NoticeMessage) {
-              console.debug('Backend message', getBackendMessageName(msg[0]!), msg);
-            }
           }
           await writer.write(responseMessage);
         }
