@@ -94,3 +94,56 @@ export function createVirtualServer<T>() {
 
   return { listen, connect };
 }
+
+/**
+ * Converts a `ReadableStream` to an `AsyncIterator`.
+ *
+ * Note that `ReadableStream` is supposed to implement `AsyncIterable`
+ * already, but this isn't true for all environments today (eg. Safari).
+ *
+ * Use this method as a ponyfill.
+ */
+export function toAsyncIterator<R = unknown>(
+  readable: ReadableStream<R>,
+  options?: { preventCancel?: boolean },
+): AsyncIterableIterator<R> {
+  // If the `ReadableStream` implements `[Symbol.asyncIterator]`, use it
+  if (Symbol.asyncIterator in readable) {
+    return readable[Symbol.asyncIterator](options);
+  }
+
+  // Otherwise fallback to a ponyfill
+  const reader = (readable as ReadableStream<R>).getReader();
+  const iterator: AsyncIterableIterator<R> = {
+    async next() {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          reader.releaseLock();
+        }
+        return {
+          done,
+          // biome-ignore lint/style/noNonNullAssertion: <explanation>
+          value: value!,
+        };
+      } catch (e) {
+        reader.releaseLock();
+        throw e;
+      }
+    },
+    async return(value: unknown) {
+      if (!options?.preventCancel) {
+        const cancelPromise = reader.cancel(value);
+        reader.releaseLock();
+        await cancelPromise;
+      } else {
+        reader.releaseLock();
+      }
+      return { done: true, value };
+    },
+    [Symbol.asyncIterator]() {
+      return iterator;
+    },
+  };
+  return iterator;
+}

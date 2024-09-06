@@ -48,8 +48,8 @@
   "devDependencies": {
     "@biomejs/biome": "^1.8.3",
     "@electric-sql/pglite": "^0.2.4",
-    "@nodeweb/knex": "^3.1.0-alpha.11",
-    "@nodeweb/pg": "^8.12.0-alpha.2",
+    "@nodeweb/knex": "^3.1.0-alpha.13",
+    "@nodeweb/pg": "^8.12.0-alpha.5",
     "@total-typescript/tsconfig": "^1.0.4",
     "@types/node": "^20.14.11",
     "@types/pg": "^8.11.8",

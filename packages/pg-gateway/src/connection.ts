@@ -9,15 +9,10 @@ import {
   ServerStep,
   type TlsInfo,
 } from './connection.types.js';
-import type { DuplexStream } from './streams.js';
 import { AsyncIterableWithMetadata } from './iterable-util.js';
-import { getMessages, MessageBuffer } from './message-buffer.js';
-import {
-  BackendMessageCode,
-  FrontendMessageCode,
-  getBackendMessageName,
-  getFrontendMessageName,
-} from './message-codes.js';
+import { MessageBuffer } from './message-buffer.js';
+import { BackendMessageCode, FrontendMessageCode } from './message-codes.js';
+import { type DuplexStream, toAsyncIterator } from './streams.js';
 
 export type TlsOptions = {
   key: ArrayBuffer;
@@ -186,7 +181,7 @@ export default class PostgresConnection {
 
   async processData() {
     const writer = this.duplex.writable.getWriter();
-    for await (const data of this.duplex.readable) {
+    for await (const data of toAsyncIterator(this.duplex.readable)) {
       this.messageBuffer.mergeBuffer(data);
       for await (const clientMessage of this.messageBuffer.processMessages(this.hasStarted)) {
         console.debug('Frontend message', getFrontendMessageName(clientMessage[0]!), clientMessage);
