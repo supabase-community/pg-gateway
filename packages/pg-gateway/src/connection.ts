@@ -117,10 +117,8 @@ export type PostgresConnectionOptions = {
 };
 
 export type MessageResponse =
-  | undefined
-  | Uint8Array
-  | Iterable<Uint8Array>
-  | AsyncIterable<Uint8Array>;
+  // biome-ignore lint/suspicious/noConfusingVoidType: this is a return type
+  void | Uint8Array | Iterable<Uint8Array> | AsyncIterable<Uint8Array>;
 
 export default class PostgresConnection {
   private step: ServerStep = ServerStep.AwaitingInitialMessage;
@@ -194,6 +192,15 @@ export default class PostgresConnection {
     this.removeSocketHandlers(this.socket);
     this.detached = true;
     return this.socket;
+  }
+
+  /**
+   * Ends the `PostgresConnection`.
+   * The socket will be closed and no more handlers will be called.
+   */
+  end() {
+    this.removeSocketHandlers(this.socket);
+    this.socket.end();
   }
 
   /**
