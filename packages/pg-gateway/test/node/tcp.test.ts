@@ -4,7 +4,6 @@ import pg, { type ClientConfig } from 'pg';
 import postgres from 'postgres';
 import { fromNodeSocket } from 'pg-gateway/node';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PGliteExtendedQueryPatch } from '../util';
 
 const port = 54320;
 const connectionString = `postgresql://postgres:postgres@localhost:${port}/postgres`;
@@ -27,7 +26,7 @@ beforeAll(() => {
   server = net.createServer(async (socket) => {
     const db = new PGlite();
 
-    const connection = await fromNodeSocket(socket, {
+    await fromNodeSocket(socket, {
       async onStartup() {
         await db.waitReady;
       },
@@ -37,12 +36,9 @@ beforeAll(() => {
         }
 
         // Send message to PGlite
-        const response = await db.execProtocolRaw(data);
-        return extendedQueryPatch.filterResponse(data, response);
+        return await db.execProtocolRaw(data);
       },
     });
-
-    const extendedQueryPatch = new PGliteExtendedQueryPatch(connection);
   });
 
   server.listen(port);

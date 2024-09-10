@@ -2,7 +2,7 @@ import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import { PostgresConnection, createDuplexPair } from 'pg-gateway';
 import { describe, expect, it } from 'vitest';
-import { PGliteExtendedQueryPatch, socketFromDuplexStream } from '../util.js';
+import { socketFromDuplexStream } from '../util.js';
 
 const { Client } = pg;
 
@@ -15,7 +15,7 @@ async function connect() {
 
   const db = new PGlite();
 
-  const connection = new PostgresConnection(serverDuplex, {
+  new PostgresConnection(serverDuplex, {
     async onStartup() {
       await db.waitReady;
     },
@@ -23,13 +23,9 @@ async function connect() {
       if (!isAuthenticated) {
         return;
       }
-      // Send message to PGlite
-      const response = await db.execProtocolRaw(data);
-      return extendedQueryPatch.filterResponse(data, response);
+      return await db.execProtocolRaw(data);
     },
   });
-
-  const extendedQueryPatch = new PGliteExtendedQueryPatch(connection);
 
   const client = new Client({
     user: 'postgres',

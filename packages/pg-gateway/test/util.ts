@@ -127,35 +127,3 @@ export class PassThroughSocket extends EventEmitter {
 
   uncork() {}
 }
-
-export class PGliteExtendedQueryPatch {
-  isExtendedQuery = false;
-
-  constructor(public connection: PostgresConnection) {}
-
-  async *filterResponse(message: Uint8Array, response: Uint8Array) {
-    // 'Parse' indicates the start of an extended query
-    if (message[0] === FrontendMessageCode.Parse) {
-      this.isExtendedQuery = true;
-    }
-
-    // 'Sync' indicates the end of an extended query
-    if (message[0] === FrontendMessageCode.Sync) {
-      this.isExtendedQuery = false;
-
-      // Manually inject 'ReadyForQuery' message at the end
-      return this.connection.createReadyForQuery();
-    }
-
-    // A PGlite response can contain multiple messages
-    for await (const message of getMessages(response)) {
-      // Filter out incorrect `ReadyForQuery` messages during the extended query protocol
-      if (this.isExtendedQuery && message[0] === BackendMessageCode.ReadyForQuery) {
-        continue;
-      }
-      yield message;
-    }
-
-    return null;
-  }
-}
