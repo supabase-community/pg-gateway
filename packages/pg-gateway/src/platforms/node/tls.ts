@@ -1,27 +1,46 @@
+import { X509Certificate } from 'node:crypto';
 import { Duplex } from 'node:stream';
 import { TLSSocket, type TLSSocketOptions, createSecureContext } from 'node:tls';
 import type { TlsOptions, TlsOptionsCallback } from '../../connection.js';
 import type { TlsInfo } from '../../connection.types.js';
 import type { DuplexStream } from '../../streams.js';
 
+export async function validateCredentials(credentials: {
+  username: string;
+  certificate: Uint8Array;
+}) {
+  const cert = new X509Certificate(Buffer.from(credentials.certificate));
+
+  const subjectKeyValues: Record<string, string> = Object.fromEntries(
+    cert.subject.split(/, ?/).map((entry) => entry.split('=')),
+  );
+
+  return 'CN' in subjectKeyValues && subjectKeyValues.CN === credentials.username;
+}
+
 export async function upgradeTls(
   duplex: DuplexStream<Uint8Array>,
   options: TlsOptions | TlsOptionsCallback,
-  tlsInfo: TlsInfo = {},
   requestCert = false,
 ): Promise<{
   duplex: DuplexStream<Uint8Array>;
   tlsInfo: TlsInfo;
 }> {
-  const tlsSocketOptions = await createTlsSocketOptions(options, tlsInfo, requestCert);
+  const tlsInfo: TlsInfo = {};
+  const tlsSocketOptions = await createTlsSocketOptions(options, requestCert);
+
   const nodeDuplex = Duplex.fromWeb(duplex);
 
   const secureSocket = new TLSSocket(nodeDuplex, {
     ...tlsSocketOptions,
     isServer: true,
-    SNICallback: async (sniServerName, callback) => {
-      tlsInfo.sniServerName = sniServerName;
-      const updatedTlsSocketOptions = await createTlsSocketOptions(options, tlsInfo, requestCert);
+    SNICallback: async (serverName, callback) => {
+      tlsInfo.serverName = serverName;
+      const updatedTlsSocketOptions = await createTlsSocketOptions(
+        options,
+        requestCert,
+        serverName,
+      );
       callback(null, createSecureContext(updatedTlsSocketOptions));
     },
   });
@@ -33,20 +52,27 @@ export async function upgradeTls(
     });
   });
 
+  const peerCertificate = secureSocket.getPeerCertificate();
+
+  if (peerCertificate) {
+    tlsInfo.clientCertificate = new Uint8Array(peerCertificate.raw);
+  }
+
   return {
     duplex: Duplex.toWeb(nodeDuplex),
-    // clientCertificate: secureSocket.getPeerCertificate(),
     tlsInfo,
   };
 }
 
 async function createTlsSocketOptions(
   optionsOrCallback: TlsOptions | TlsOptionsCallback,
-  tlsInfo: TlsInfo,
   requestCert: boolean,
+  serverName?: string,
 ): Promise<TLSSocketOptions> {
   const { key, cert, ca, passphrase } =
-    typeof optionsOrCallback === 'function' ? await optionsOrCallback(tlsInfo) : optionsOrCallback;
+    typeof optionsOrCallback === 'function'
+      ? await optionsOrCallback(serverName)
+      : optionsOrCallback;
 
   return {
     key: Buffer.from(key),

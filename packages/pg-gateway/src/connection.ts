@@ -4,7 +4,7 @@ import { createBackendErrorMessage } from './backend-error.js';
 import { BufferReader } from './buffer-reader.js';
 import { BufferWriter } from './buffer-writer.js';
 import {
-  type ClientInfo,
+  type ClientParameters,
   type ConnectionState,
   ServerStep,
   type TlsInfo,
@@ -21,7 +21,7 @@ export type TlsOptions = {
   passphrase?: string;
 };
 
-export type TlsOptionsCallback = (tlsInfo: TlsInfo) => TlsOptions | Promise<TlsOptions>;
+export type TlsOptionsCallback = (serverName?: string) => TlsOptions | Promise<TlsOptions>;
 
 export type PostgresConnectionOptions = {
   /**
@@ -38,22 +38,6 @@ export type PostgresConnectionOptions = {
    * TLS options for when clients send an SSLRequest.
    */
   tls?: TlsOptions | TlsOptionsCallback;
-
-  /**
-   * Implements the TLS upgrade logic for the stream.
-   *
-   * You probably don't want to implement this yourself -
-   * instead use `fromNodeSocket()` helper.
-   */
-  upgradeTls?(
-    duplex: DuplexStream<Uint8Array>,
-    options: TlsOptions | TlsOptionsCallback,
-    tlsInfo?: TlsInfo,
-    requestCert?: boolean,
-  ): Promise<{
-    duplex: DuplexStream<Uint8Array>;
-    tlsInfo: TlsInfo;
-  }>;
 
   /**
    * Callback after the connection has been upgraded to TLS.
@@ -117,6 +101,26 @@ export type PostgresConnectionOptions = {
   onQuery?(query: string, state: ConnectionState): Uint8Array | Promise<Uint8Array>;
 };
 
+/**
+ * Platform-specific adapters for handling features like TLS upgrades.
+ *
+ * Some platform helpers like `fromNodeSocket()` will implement these
+ * for you.
+ */
+export type PostgresConnectionAdapters = {
+  /**
+   * Implements the TLS upgrade logic for the stream.
+   */
+  upgradeTls?(
+    duplex: DuplexStream<Uint8Array>,
+    options: TlsOptions | TlsOptionsCallback,
+    requestCert?: boolean,
+  ): Promise<{
+    duplex: DuplexStream<Uint8Array>;
+    tlsInfo: TlsInfo;
+  }>;
+};
+
 export type MessageResponse =
   | undefined
   | Uint8Array
@@ -138,19 +142,20 @@ export default class PostgresConnection {
   detached = false;
   writer = new BufferWriter();
   reader = new BufferReader();
-  clientInfo?: ClientInfo;
+  clientParams?: ClientParameters;
   tlsInfo?: TlsInfo;
   messageBuffer = new MessageBuffer();
 
   constructor(
     public duplex: DuplexStream<Uint8Array>,
     options: PostgresConnectionOptions = {},
+    public adapters: PostgresConnectionAdapters = {},
   ) {
     this.options = {
       auth: { method: 'trust' },
       ...options,
     };
-    if (this.options.tls && !this.options.upgradeTls) {
+    if (this.options.tls && !this.adapters.upgradeTls) {
       throw new Error(
         'TLS options are only available when upgradeTls() is implemented. Did you mean to use fromNodeSocket()?',
       );
@@ -163,7 +168,7 @@ export default class PostgresConnection {
     return {
       hasStarted: this.hasStarted,
       isAuthenticated: this.isAuthenticated,
-      clientInfo: this.clientInfo,
+      clientParams: this.clientParams,
       tlsInfo: this.tlsInfo,
       step: this.step,
     };
@@ -281,7 +286,7 @@ export default class PostgresConnection {
   }
 
   async *handleSslRequest() {
-    if (!this.options.tls || !this.options.upgradeTls) {
+    if (!this.options.tls || !this.adapters.upgradeTls) {
       this.writer.addString('N');
       yield this.writer.flush();
       return;
@@ -294,10 +299,9 @@ export default class PostgresConnection {
     // From now on the frontend will communicate via TLS, so upgrade the connection
     const requestCert = this.options.auth.method === 'cert';
 
-    const { duplex, tlsInfo } = await this.options.upgradeTls(
+    const { duplex, tlsInfo } = await this.adapters.upgradeTls(
       this.duplex,
       this.options.tls,
-      this.tlsInfo,
       requestCert,
     );
 
@@ -331,13 +335,9 @@ export default class PostgresConnection {
       return;
     }
 
-    this.clientInfo = {
-      majorVersion,
-      minorVersion,
-      parameters: {
-        user: parameters.user,
-        ...parameters,
-      },
+    this.clientParams = {
+      user: parameters.user,
+      ...parameters,
     };
 
     this.hasStarted = true;
@@ -356,7 +356,7 @@ export default class PostgresConnection {
     this.authFlow = createAuthFlow({
       reader: this.reader,
       writer: this.writer,
-      username: this.clientInfo.parameters.user,
+      username: this.clientParams.user,
       auth: this.options.auth,
       connectionState: this.state,
     });
@@ -556,8 +556,8 @@ export default class PostgresConnection {
     return createBackendErrorMessage({
       severity: 'FATAL',
       code: '28P01',
-      message: this.clientInfo?.parameters.user
-        ? `password authentication failed for user "${this.clientInfo.parameters.user}"`
+      message: this.clientParams?.user
+        ? `password authentication failed for user "${this.clientParams.user}"`
         : 'password authentication failed',
     });
   }

@@ -3,14 +3,9 @@ export type ClientParameters = {
   [key: string]: string;
 };
 
-export type ClientInfo = {
-  majorVersion: number;
-  minorVersion: number;
-  parameters: ClientParameters;
-};
-
 export type TlsInfo = {
-  sniServerName?: string;
+  serverName?: string;
+  clientCertificate?: Uint8Array;
 };
 
 export const ServerStep = {
@@ -24,7 +19,7 @@ export type ServerStep = (typeof ServerStep)[keyof typeof ServerStep];
 export type ConnectionState = {
   hasStarted: boolean;
   isAuthenticated: boolean;
-  clientInfo?: ClientInfo;
+  clientParams?: ClientParameters;
   tlsInfo?: TlsInfo;
   step: ServerStep;
 };

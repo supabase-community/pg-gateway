@@ -1,7 +1,10 @@
 import type { Socket } from 'node:net';
 import { Duplex } from 'node:stream';
-import PostgresConnection, { type PostgresConnectionOptions } from '../../connection.js';
-import { upgradeTls } from './tls.js';
+import PostgresConnection, {
+  type PostgresConnectionAdapters,
+  type PostgresConnectionOptions,
+} from '../../connection.js';
+import { upgradeTls, validateCredentials } from './tls.js';
 
 /**
  * Creates a `PostgresConnection` from a Node.js TCP/Unix `Socket`.
@@ -14,12 +17,18 @@ import { upgradeTls } from './tls.js';
  */
 export async function fromNodeSocket(socket: Socket, options?: PostgresConnectionOptions) {
   const duplex = Duplex.toWeb(socket);
-  const opts = options
-    ? {
-        upgradeTls,
-        ...options,
-      }
-    : undefined;
 
-  return new PostgresConnection(duplex, opts);
+  const opts: PostgresConnectionOptions = {
+    ...options,
+  };
+
+  if (opts?.auth?.method === 'cert') {
+    opts.auth.validateCredentials = validateCredentials;
+  }
+
+  const adapters: PostgresConnectionAdapters = {
+    upgradeTls,
+  };
+
+  return new PostgresConnection(duplex, options, adapters);
 }

@@ -1,17 +1,16 @@
-import type { PeerCertificate } from 'node:tls';
 import { createBackendErrorMessage } from '../backend-error.js';
 import type { BufferReader } from '../buffer-reader.js';
 import type { BufferWriter } from '../buffer-writer.js';
+import { closeSignal } from '../connection.js';
 import type { ConnectionState } from '../connection.types';
 import { BaseAuthFlow } from './base-auth-flow';
-import { closeSignal } from '../connection.js';
 
 export type CertAuthOptions = {
   method: 'cert';
   validateCredentials?: (
     credentials: {
       username: string;
-      certificate: PeerCertificate;
+      certificate: Uint8Array;
     },
     connectionState: ConnectionState,
   ) => boolean | Promise<boolean>;
@@ -32,20 +31,20 @@ export class CertAuthFlow extends BaseAuthFlow {
     connectionState: ConnectionState;
   }) {
     super(params);
+
     this.auth = {
       ...params.auth,
       validateCredentials:
         params.auth.validateCredentials ??
-        (async ({ username, certificate }) => {
-          return certificate.subject.CN === username;
+        (() => {
+          throw new Error('Client certificate validation not implemented');
         }),
     };
     this.username = params.username;
   }
 
   async *handleClientMessage(message: BufferSource) {
-    // biome-ignore lint/correctness/noConstantCondition: TODO: detect TLS state
-    if (false) {
+    if (!this.connectionState.tlsInfo) {
       yield createBackendErrorMessage({
         severity: 'FATAL',
         code: '08000',
@@ -55,27 +54,23 @@ export class CertAuthFlow extends BaseAuthFlow {
       return;
     }
 
-    // biome-ignore lint/correctness/noConstantCondition: TODO: detect if cert authorized
-    if (false) {
+    if (!this.connectionState.tlsInfo.clientCertificate) {
       yield createBackendErrorMessage({
         severity: 'FATAL',
         code: '08000',
-        message: 'client certificate is invalid',
+        message: 'client certificate required',
       });
       yield closeSignal;
       return;
     }
 
-    // TODO: get peer cert and validate through hook
-    const isValid = false;
-
-    // const isValid = await this.auth.validateCredentials(
-    //   {
-    //     username: this.username,
-    //     certificate:  this.socket.getPeerCertificate(),
-    //   },
-    //   this.connectionState,
-    // );
+    const isValid = await this.auth.validateCredentials(
+      {
+        username: this.username,
+        certificate: this.connectionState.tlsInfo.clientCertificate,
+      },
+      this.connectionState,
+    );
 
     if (!isValid) {
       yield createBackendErrorMessage({
