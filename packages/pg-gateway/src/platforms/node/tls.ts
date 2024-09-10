@@ -1,5 +1,5 @@
 import { X509Certificate } from 'node:crypto';
-import { Duplex } from 'node:stream';
+import { Duplex, once } from 'node:stream';
 import { TLSSocket, type TLSSocketOptions, createSecureContext } from 'node:tls';
 import type { TlsOptions, TlsOptionsCallback } from '../../connection.js';
 import type { TlsInfo } from '../../connection.types.js';
@@ -29,9 +29,7 @@ export async function upgradeTls(
   const tlsInfo: TlsInfo = {};
   const tlsSocketOptions = await createTlsSocketOptions(options, requestCert);
 
-  const nodeDuplex = Duplex.fromWeb(duplex);
-
-  const secureSocket = new TLSSocket(nodeDuplex, {
+  const secureSocket = new TLSSocket(Duplex.fromWeb(duplex), {
     ...tlsSocketOptions,
     isServer: true,
     SNICallback: async (serverName, callback) => {
@@ -45,21 +43,17 @@ export async function upgradeTls(
     },
   });
 
-  await new Promise<void>((resolve) => {
-    secureSocket.on('secure', () => {
-      onServerSocketSecure(secureSocket);
-      resolve();
-    });
-  });
+  await once(secureSocket, 'secure');
+  onServerSocketSecure(secureSocket);
 
   const peerCertificate = secureSocket.getPeerCertificate();
 
-  if (peerCertificate) {
+  if (peerCertificate && 'raw' in peerCertificate) {
     tlsInfo.clientCertificate = new Uint8Array(peerCertificate.raw);
   }
 
   return {
-    duplex: Duplex.toWeb(nodeDuplex),
+    duplex: Duplex.toWeb(secureSocket),
     tlsInfo,
   };
 }

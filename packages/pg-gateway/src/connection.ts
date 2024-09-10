@@ -127,9 +127,13 @@ export type MessageResponse =
   | Iterable<Uint8Array>
   | AsyncIterable<Uint8Array>;
 
+export const tlsUpgradeSignal = Symbol('tls-upgrade');
 export const closeSignal = Symbol('close');
+
+export type TlsUpgradeSignal = typeof tlsUpgradeSignal;
 export type CloseSignal = typeof closeSignal;
-export type ConnectionSignal = CloseSignal;
+
+export type ConnectionSignal = TlsUpgradeSignal | CloseSignal;
 
 export default class PostgresConnection {
   private step: ServerStep = ServerStep.AwaitingInitialMessage;
@@ -160,8 +164,7 @@ export default class PostgresConnection {
         'TLS options are only available when upgradeTls() is implemented. Did you mean to use fromNodeSocket()?',
       );
     }
-
-    this.processData();
+    this.init(duplex);
   }
 
   get state(): ConnectionState {
@@ -174,39 +177,97 @@ export default class PostgresConnection {
     };
   }
 
+  async init(duplex: DuplexStream<Uint8Array>) {
+    try {
+      const signal = await this.processData(duplex);
+
+      if (this.detached) {
+        return;
+      }
+
+      if (signal === tlsUpgradeSignal) {
+        if (!this.options.tls) {
+          throw new Error('Upgrading TLS but TLS options are not available');
+        }
+        if (!this.adapters.upgradeTls) {
+          throw new Error('Upgrading TLS but upgradeTls is not implemented');
+        }
+
+        const requestCert = this.options.auth.method === 'cert';
+
+        const { duplex: secureDuplex, tlsInfo } = await this.adapters.upgradeTls(
+          duplex,
+          this.options.tls,
+          requestCert,
+        );
+
+        this.duplex = secureDuplex;
+        this.tlsInfo = tlsInfo;
+        this.messageBuffer = new MessageBuffer();
+
+        await this.options.onTlsUpgrade?.(this.state);
+        if (this.detached) {
+          return;
+        }
+
+        await this.init(secureDuplex);
+        return;
+      }
+
+      if (signal === closeSignal) {
+        await this.duplex.writable.close();
+        return;
+      }
+    } catch (err) {
+      await this.duplex.writable.abort();
+      console.error(err);
+    }
+  }
   /**
    * Detaches the `PostgresConnection` from the stream.
    * After calling this, data will no longer be buffered
    * and all processing will halt.
+   *
+   * Useful when proxying. You can detach at a certain point
+   * (like TLS upgrade) to prevent further buffering/processing
+   * when your goal is to pipe future messages downstream.
    */
   async detach() {
     this.detached = true;
+
+    // TODO: inject lingering `messageBuffer` (if any) back
+    // onto stream to prevent data loss
     return this.duplex;
   }
 
-  async processData() {
-    const writer = this.duplex.writable.getWriter();
-    for await (const data of toAsyncIterator(this.duplex.readable)) {
-      this.messageBuffer.mergeBuffer(data);
-      for await (const clientMessage of this.messageBuffer.processMessages(this.hasStarted)) {
-        for await (const responseMessage of this.handleClientMessage(clientMessage)) {
-          if (responseMessage === closeSignal) {
-            await writer.close();
-            return;
+  async processData(duplex: DuplexStream<Uint8Array>): Promise<ConnectionSignal | undefined> {
+    const writer = duplex.writable.getWriter();
+    try {
+      for await (const data of toAsyncIterator(duplex.readable, { preventCancel: true })) {
+        this.messageBuffer.mergeBuffer(data);
+        for await (const clientMessage of this.messageBuffer.processMessages(this.hasStarted)) {
+          for await (const responseMessage of this.handleClientMessage(clientMessage)) {
+            if (this.detached) {
+              return;
+            }
+            if (responseMessage === tlsUpgradeSignal) {
+              return tlsUpgradeSignal;
+            }
+            if (responseMessage === closeSignal) {
+              return closeSignal;
+            }
+            await writer.write(responseMessage);
           }
-          await writer.write(responseMessage);
         }
       }
-      // TODO: anywhere else we need to check for this?
-      if (this.detached) {
-        return;
-      }
+    } finally {
+      writer.releaseLock();
     }
   }
 
   async *handleClientMessage(
     message: Uint8Array,
-  ): AsyncGenerator<Uint8Array | CloseSignal, void, undefined> {
+  ): AsyncGenerator<Uint8Array | ConnectionSignal, void, undefined> {
     this.reader.setBuffer(message);
 
     const messageResponse = await this.options.onMessage?.(message, this.state);
@@ -297,18 +358,7 @@ export default class PostgresConnection {
     yield this.writer.flush();
 
     // From now on the frontend will communicate via TLS, so upgrade the connection
-    const requestCert = this.options.auth.method === 'cert';
-
-    const { duplex, tlsInfo } = await this.adapters.upgradeTls(
-      this.duplex,
-      this.options.tls,
-      requestCert,
-    );
-
-    this.duplex = duplex;
-    this.tlsInfo = tlsInfo;
-
-    await this.options.onTlsUpgrade?.(this.state);
+    yield tlsUpgradeSignal;
   }
 
   async *handleStartupMessage(message: BufferSource) {

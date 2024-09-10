@@ -33,6 +33,7 @@ export class PassThroughSocket extends EventEmitter {
   writer: WritableStreamDefaultWriter;
   writable = false;
   destroyed = false;
+  paused = false;
 
   constructor(public duplex: DuplexStream<Uint8Array>) {
     super();
@@ -41,8 +42,20 @@ export class PassThroughSocket extends EventEmitter {
 
   private async emitData() {
     for await (const chunk of this.duplex.readable) {
+      while (this.paused) {
+        // Yield to the event loop
+        await new Promise<void>((resolve) => setTimeout(resolve));
+      }
       this.emit('data', Buffer.from(chunk));
     }
+  }
+
+  pause() {
+    this.paused = true;
+  }
+
+  resume() {
+    this.paused = false;
   }
 
   connect() {
@@ -109,6 +122,10 @@ export class PassThroughSocket extends EventEmitter {
   unref() {
     return this;
   }
+
+  cork() {}
+
+  uncork() {}
 }
 
 export class PGliteExtendedQueryPatch {
