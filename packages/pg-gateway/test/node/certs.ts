@@ -48,7 +48,7 @@ async function execOpenSSL(args: string[], fds: { [key: string]: Buffer } = {}) 
   ]);
 
   if (exitCode !== 0) {
-    throw new Error(`OpenSSL process exited with code ${exitCode}`);
+    throw new Error(`OpenSSL process exited with code ${exitCode}. ${stderr}`);
   }
 
   return [stdout, stderr];

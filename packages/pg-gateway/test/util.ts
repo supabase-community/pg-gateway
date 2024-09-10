@@ -1,11 +1,5 @@
 import EventEmitter from 'node:events';
-import {
-  BackendMessageCode,
-  FrontendMessageCode,
-  getMessages,
-  type PostgresConnection,
-  type DuplexStream,
-} from 'pg-gateway';
+import type { DuplexStream } from 'pg-gateway';
 
 /**
  * Creates a passthrough socket object that can be passed
