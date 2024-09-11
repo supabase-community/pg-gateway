@@ -1,10 +1,11 @@
-import { createServer } from 'node:net';
-import pg, { type ClientConfig } from 'pg';
+import { createServer, type Server } from 'node:net';
+import type { ClientConfig } from 'pg';
 import { type PostgresConnectionOptions, createDuplexPair } from 'pg-gateway';
 import { fromDuplexStream, fromNodeSocket } from 'pg-gateway/node';
 import { describe, expect, it } from 'vitest';
-import { socketFromDuplexStream } from '../util';
+import { DisposablePgClient, socketFromDuplexStream } from '../util';
 import { generateCA, generateCSR, signCert, toPEM } from './certs';
+import { once } from 'node:events';
 
 async function generateAllCertificates() {
   const { caKey, caCert } = await generateCA('My Root CA');
@@ -33,8 +34,12 @@ async function createPostgresServer(options?: PostgresConnectionOptions) {
   const server = createServer((socket) => fromNodeSocket(socket, options));
 
   // Listen on a random free port
-  await new Promise<void>((resolve) => server.listen(0, resolve));
+  server.listen(0);
+  await once(server, 'listening');
+  return server;
+}
 
+function getPort(server: Server) {
   const address = server.address();
 
   if (typeof address !== 'object') {
@@ -45,24 +50,18 @@ async function createPostgresServer(options?: PostgresConnectionOptions) {
     throw new Error('Server has no address');
   }
 
-  const close = () =>
-    new Promise<void>((resolve, reject) => {
-      server.close((err) => (err ? reject(err) : resolve()));
-    });
-
-  return { server, port: address.port, close };
+  return address.port;
 }
 
 async function connectPg(config: string | ClientConfig) {
-  const { Client } = pg;
-  const client = new Client(config);
+  const client = new DisposablePgClient(config);
   await client.connect();
   return client;
 }
 
 describe('tls', () => {
   it('basic tls over tcp', async () => {
-    const { port, close } = await createPostgresServer({
+    await using server = await createPostgresServer({
       auth: {
         method: 'trust',
       },
@@ -72,22 +71,16 @@ describe('tls', () => {
       },
     });
 
-    try {
-      const client = await connectPg({
-        port,
-        ssl: {
-          ca: Buffer.from(caCert),
-        },
-      });
-
-      await client.end();
-    } finally {
-      await close();
-    }
+    await using client = await connectPg({
+      port: getPort(server),
+      ssl: {
+        ca: Buffer.from(caCert),
+      },
+    });
   });
 
   it('sni available when sent from client', async () => {
-    const { port, close } = await createPostgresServer({
+    await using server = await createPostgresServer({
       auth: {
         method: 'trust',
       },
@@ -100,23 +93,17 @@ describe('tls', () => {
       },
     });
 
-    try {
-      const client = await connectPg({
-        host: 'localhost',
-        port,
-        ssl: {
-          ca: Buffer.from(caCert),
-        },
-      });
-
-      await client.end();
-    } finally {
-      await close();
-    }
+    await using client = await connectPg({
+      host: 'localhost',
+      port: getPort(server),
+      ssl: {
+        ca: Buffer.from(caCert),
+      },
+    });
   });
 
   it('sni not available when omitted from client', async () => {
-    const { port, close } = await createPostgresServer({
+    await using server = await createPostgresServer({
       auth: {
         method: 'trust',
       },
@@ -129,23 +116,17 @@ describe('tls', () => {
       },
     });
 
-    try {
-      const client = await connectPg({
-        host: '127.0.0.1',
-        port,
-        ssl: {
-          ca: Buffer.from(caCert),
-        },
-      });
-
-      await client.end();
-    } finally {
-      await close();
-    }
+    await using client = await connectPg({
+      host: '127.0.0.1',
+      port: getPort(server),
+      ssl: {
+        ca: Buffer.from(caCert),
+      },
+    });
   });
 
   it('client cert authenticates', async () => {
-    const { port, close } = await createPostgresServer({
+    await using server = await createPostgresServer({
       auth: {
         method: 'cert',
       },
@@ -156,25 +137,19 @@ describe('tls', () => {
       },
     });
 
-    try {
-      const client = await connectPg({
-        port,
-        user: 'postgres',
-        ssl: {
-          ca: Buffer.from(caCert),
-          cert: Buffer.from(clientCert),
-          key: Buffer.from(clientKey),
-        },
-      });
-
-      await client.end();
-    } finally {
-      await close();
-    }
+    await using client = await connectPg({
+      port: getPort(server),
+      user: 'postgres',
+      ssl: {
+        ca: Buffer.from(caCert),
+        cert: Buffer.from(clientCert),
+        key: Buffer.from(clientKey),
+      },
+    });
   });
 
   it('client cert fails when CN !== user', async () => {
-    const { port, close } = await createPostgresServer({
+    await using server = await createPostgresServer({
       auth: {
         method: 'cert',
       },
@@ -185,25 +160,21 @@ describe('tls', () => {
       },
     });
 
-    try {
-      const promise = connectPg({
-        port,
-        user: 'bob',
-        ssl: {
-          ca: Buffer.from(caCert),
-          cert: Buffer.from(clientCert),
-          key: Buffer.from(clientKey),
-        },
-      });
+    const promise = connectPg({
+      port: getPort(server),
+      user: 'bob',
+      ssl: {
+        ca: Buffer.from(caCert),
+        cert: Buffer.from(clientCert),
+        key: Buffer.from(clientKey),
+      },
+    });
 
-      await expect(promise).rejects.toThrowError('client certificate is invalid');
-    } finally {
-      await close();
-    }
+    await expect(promise).rejects.toThrowError('client certificate is invalid');
   });
 
   it('wrong ca cert fails', async () => {
-    const { port, close } = await createPostgresServer({
+    await using server = await createPostgresServer({
       auth: {
         method: 'cert',
       },
@@ -214,18 +185,14 @@ describe('tls', () => {
       },
     });
 
-    try {
-      const promise = connectPg({
-        port,
-        ssl: {
-          ca: Buffer.from(serverCert),
-        },
-      });
+    const promise = connectPg({
+      port: getPort(server),
+      ssl: {
+        ca: Buffer.from(serverCert),
+      },
+    });
 
-      await expect(promise).rejects.toThrowError('self-signed certificate in certificate chain');
-    } finally {
-      await close();
-    }
+    await expect(promise).rejects.toThrowError('self-signed certificate in certificate chain');
   });
 
   it('basic tls over in-memory duplex pair', async () => {
@@ -242,13 +209,11 @@ describe('tls', () => {
       },
     });
 
-    const client = await connectPg({
+    await using client = await connectPg({
       stream: socketFromDuplexStream(clientDuplex),
       ssl: {
         ca: Buffer.from(caCert),
       },
     });
-
-    await client.end();
   });
 });

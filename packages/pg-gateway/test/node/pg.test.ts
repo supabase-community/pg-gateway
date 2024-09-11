@@ -1,10 +1,7 @@
 import { PGlite } from '@electric-sql/pglite';
-import pg from 'pg';
 import { PostgresConnection, createDuplexPair } from 'pg-gateway';
 import { describe, expect, it } from 'vitest';
-import { socketFromDuplexStream } from '../util.js';
-
-const { Client } = pg;
+import { DisposablePgClient, socketFromDuplexStream } from '../util.js';
 
 /**
  * Creates a one-time `PostgresConnection` and links to a
@@ -27,7 +24,7 @@ async function connect() {
     },
   });
 
-  const client = new Client({
+  const client = new DisposablePgClient({
     user: 'postgres',
     stream: socketFromDuplexStream(clientDuplex),
   });
@@ -38,18 +35,16 @@ async function connect() {
 
 describe('pg client with pglite', () => {
   it('simple query returns result', async () => {
-    const client = await connect();
+    await using client = await connect();
     const res = await client.query("select 'Hello world!' as message");
     const [{ message }] = res.rows;
     expect(message).toBe('Hello world!');
-    await client.end();
   });
 
   it('extended query returns result', async () => {
-    const client = await connect();
+    await using client = await connect();
     const res = await client.query('SELECT $1::text as message', ['Hello world!']);
     const [{ message }] = res.rows;
     expect(message).toBe('Hello world!');
-    await client.end();
   });
 });

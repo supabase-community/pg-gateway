@@ -27,8 +27,14 @@ async function startServer(listener: Deno.TcpListener) {
   }
 }
 
-async function connect() {
-  const client = new Client('postgresql://postgres:postgres@localhost:54320/postgres');
+class DisposableClient extends Client {
+  async [Symbol.asyncDispose]() {
+    await this.end();
+  }
+}
+
+async function getClient(databaseUrl: string) {
+  const client = new DisposableClient(databaseUrl);
   await client.connect();
   return client;
 }
@@ -44,10 +50,9 @@ afterAll(() => {
 
 describe('pglite', () => {
   it('simple query returns result', async () => {
-    const client = await connect();
+    await using client = await getClient('postgresql://postgres:postgres@localhost:54320/postgres');
     const res = await client.query("select 'Hello world!' as message");
     const [{ message }] = res.rows;
     expect(message).toBe('Hello world!');
-    await client.end();
   });
 });

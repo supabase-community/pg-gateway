@@ -1,23 +1,35 @@
 import { PGlite } from '@electric-sql/pglite';
 import net from 'node:net';
-import pg, { type ClientConfig } from 'pg';
+import type { ClientConfig } from 'pg';
 import postgres from 'postgres';
 import { fromNodeSocket } from 'pg-gateway/node';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { DisposablePgClient } from '../util';
 
 const port = 54320;
 const connectionString = `postgresql://postgres:postgres@localhost:${port}/postgres`;
 
 async function connectPg(config: string | ClientConfig = connectionString) {
-  const { Client } = pg;
-  const client = new Client(config);
+  const client = new DisposablePgClient(config);
   await client.connect();
   return client;
 }
 
 async function connectPostgres(config = connectionString) {
   const sql = postgres(config);
-  return sql;
+
+  // `fetch_types` uses the extended query protocol which
+  // interferes with our tests
+  sql.options.fetch_types = false;
+
+  const client = {
+    sql,
+    async [Symbol.asyncDispose]() {
+      await sql.end();
+    },
+  };
+
+  return client;
 }
 
 let server: net.Server;
@@ -50,35 +62,31 @@ afterAll(() => {
 
 describe('pglite', () => {
   it('pg simple query returns result', async () => {
-    const client = await connectPg();
+    await using client = await connectPg();
     const res = await client.query("select 'Hello world!' as message");
     const [{ message }] = res.rows;
     expect(message).toBe('Hello world!');
-    await client.end();
   });
 
   it('pg extended query returns result', async () => {
-    const client = await connectPg();
+    await using client = await connectPg();
     const res = await client.query('SELECT $1::text as message', ['Hello world!']);
     const [{ message }] = res.rows;
     expect(message).toBe('Hello world!');
-    await client.end();
   });
 
   it('postgres simple query returns result', async () => {
-    const sql = await connectPostgres();
-    const rows = await sql`select 'Hello world!' as message`.simple();
+    await using client = await connectPostgres();
+    const rows = await client.sql`select 'Hello world!' as message`.simple();
     const [{ message }] = rows;
     expect(message).toBe('Hello world!');
-    await sql.end();
   });
 
   it('postgres extended query returns result', async () => {
-    const sql = await connectPostgres();
+    await using client = await connectPostgres();
     const expectedMessage = 'Hello world!';
-    const rows = await sql`select ${expectedMessage} as message`;
+    const rows = await client.sql`select ${expectedMessage} as message`;
     const [{ message }] = rows;
     expect(message).toBe(expectedMessage);
-    await sql.end();
   });
 });

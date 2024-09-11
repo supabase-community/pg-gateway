@@ -1,5 +1,6 @@
 import EventEmitter from 'node:events';
 import type { DuplexStream } from 'pg-gateway';
+import { Client } from 'pg';
 
 /**
  * Creates a passthrough socket object that can be passed
@@ -120,4 +121,10 @@ export class PassThroughSocket extends EventEmitter {
   cork() {}
 
   uncork() {}
+}
+
+export class DisposablePgClient extends Client {
+  async [Symbol.asyncDispose]() {
+    await this.end();
+  }
 }
