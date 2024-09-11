@@ -7,3 +7,4 @@ export * from './backend-error.js';
 export * from './streams.js';
 export * from './message-codes.js';
 export * from './message-buffer.js';
+export * from './signals.js';

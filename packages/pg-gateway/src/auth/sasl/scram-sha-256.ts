@@ -2,11 +2,11 @@ import { decodeBase64, encodeBase64 } from '@std/encoding/base64';
 import { createBackendErrorMessage } from '../../backend-error.js';
 import type { BufferReader } from '../../buffer-reader.js';
 import type { BufferWriter } from '../../buffer-writer.js';
-import { closeSignal } from '../../connection.js';
 import type { ConnectionState } from '../../connection.types';
 import { createHashKey, createHmacKey, pbkdf2, timingSafeEqual } from '../../crypto.js';
 import type { AuthFlow } from '../base-auth-flow';
 import { SaslMechanism } from './sasl-mechanism';
+import { closeSignal } from '../../signals.js';
 
 export type ScramSha256Data = {
   salt: string;

@@ -4,10 +4,10 @@ import { encodeHex } from '@std/encoding/hex';
 import { createBackendErrorMessage } from '../backend-error.js';
 import type { BufferReader } from '../buffer-reader.js';
 import type { BufferWriter } from '../buffer-writer.js';
-import { closeSignal } from '../connection.js';
 import type { ConnectionState } from '../connection.types';
 import { BackendMessageCode } from '../message-codes';
 import { BaseAuthFlow } from './base-auth-flow';
+import { closeSignal } from '../signals.js';
 
 export type Md5AuthOptions = {
   method: 'md5';

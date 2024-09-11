@@ -12,6 +12,7 @@ import {
 import { AsyncIterableWithMetadata } from './iterable-util.js';
 import { MessageBuffer } from './message-buffer.js';
 import { BackendMessageCode, FrontendMessageCode } from './message-codes.js';
+import { tlsUpgradeSignal, closeSignal, type ConnectionSignal } from './signals.js';
 import { type DuplexStream, toAsyncIterator } from './streams.js';
 
 export type TlsOptions = {
@@ -126,14 +127,6 @@ export type MessageResponse =
   | Uint8Array
   | Iterable<Uint8Array>
   | AsyncIterable<Uint8Array>;
-
-export const tlsUpgradeSignal = Symbol('tls-upgrade');
-export const closeSignal = Symbol('close');
-
-export type TlsUpgradeSignal = typeof tlsUpgradeSignal;
-export type CloseSignal = typeof closeSignal;
-
-export type ConnectionSignal = TlsUpgradeSignal | CloseSignal;
 
 export default class PostgresConnection {
   private step: ServerStep = ServerStep.AwaitingInitialMessage;

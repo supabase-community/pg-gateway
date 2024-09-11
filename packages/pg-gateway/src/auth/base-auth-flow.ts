@@ -1,7 +1,7 @@
 import type { BufferReader } from '../buffer-reader.js';
 import type { BufferWriter } from '../buffer-writer.js';
-import type { ConnectionSignal } from '../connection.js';
 import type { ConnectionState } from '../connection.types.js';
+import type { ConnectionSignal } from '../signals.js';
 
 export interface AuthFlow {
   createInitialAuthMessage(): Uint8Array | undefined;

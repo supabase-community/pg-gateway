@@ -1,8 +1,8 @@
 import { createBackendErrorMessage } from '../backend-error.js';
 import type { BufferReader } from '../buffer-reader.js';
 import type { BufferWriter } from '../buffer-writer.js';
-import { closeSignal } from '../connection.js';
 import type { ConnectionState } from '../connection.types';
+import { closeSignal } from '../signals.js';
 import { BaseAuthFlow } from './base-auth-flow';
 
 export type CertAuthOptions = {
