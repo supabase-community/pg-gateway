@@ -1,9 +1,10 @@
 import { PGlite } from '@electric-sql/pglite';
+import { once } from 'node:events';
 import net from 'node:net';
 import type { ClientConfig } from 'pg';
-import postgres from 'postgres';
 import { fromNodeSocket } from 'pg-gateway/node';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import postgres from 'postgres';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { DisposablePgClient } from '../util';
 
 const port = 54320;
@@ -32,10 +33,8 @@ async function connectPostgres(config = connectionString) {
   return client;
 }
 
-let server: net.Server;
-
-beforeAll(() => {
-  server = net.createServer(async (socket) => {
+beforeAll(async () => {
+  const server = net.createServer(async (socket) => {
     const db = new PGlite();
 
     await fromNodeSocket(socket, {
@@ -46,18 +45,15 @@ beforeAll(() => {
         if (!isAuthenticated) {
           return;
         }
-
-        // Send message to PGlite
         return await db.execProtocolRaw(data);
       },
     });
   });
 
   server.listen(port);
-});
+  await once(server, 'listening');
 
-afterAll(() => {
-  server.close();
+  return () => server.close();
 });
 
 describe('pglite', () => {
