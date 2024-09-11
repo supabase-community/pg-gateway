@@ -1,4 +1,3 @@
-import type { Socket } from 'node:net';
 import type { BufferReader } from '../buffer-reader.js';
 import type { BufferWriter } from '../buffer-writer.js';
 import type { ConnectionState } from '../connection.types';
@@ -6,10 +5,7 @@ import type { AuthFlow } from './base-auth-flow';
 import { CertAuthFlow, type CertAuthOptions } from './cert';
 import { Md5AuthFlow, type Md5AuthOptions } from './md5';
 import { PasswordAuthFlow, type PasswordAuthOptions } from './password';
-import {
-  ScramSha256AuthFlow,
-  type ScramSha256AuthOptions,
-} from './sasl/scram-sha-256';
+import { ScramSha256AuthFlow, type ScramSha256AuthOptions } from './sasl/scram-sha-256';
 import type { TrustAuthOptions } from './trust';
 
 export type AuthOptions =
@@ -20,7 +16,6 @@ export type AuthOptions =
   | CertAuthOptions;
 
 export function createAuthFlow(options: {
-  socket: Socket;
   reader: BufferReader;
   writer: BufferWriter;
   auth: AuthOptions;

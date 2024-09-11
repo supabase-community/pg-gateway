@@ -8,7 +8,7 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.2.4",
+    "@electric-sql/pglite": "^0.2.6",
     "pg-gateway": "*"
   },
   "devDependencies": {

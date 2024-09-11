@@ -13,5 +13,7 @@
   },
   "[typescriptreact]": {
     "editor.defaultFormatter": "biomejs.biome"
-  }
+  },
+  "deno.enable": true,
+  "deno.enablePaths": ["./packages/pg-gateway/test/deno"]
 }

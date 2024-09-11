@@ -1,15 +1,12 @@
-import net from 'node:net';
 import { PGlite } from '@electric-sql/pglite';
-import {
-  type BackendError,
-  PostgresConnection,
-  createScramSha256Data,
-} from 'pg-gateway';
+import net from 'node:net';
+import { createScramSha256Data } from 'pg-gateway';
+import { fromNodeSocket } from 'pg-gateway/node';
 
 const db = new PGlite();
 
-const server = net.createServer((socket) => {
-  const connection = new PostgresConnection(socket, {
+const server = net.createServer(async (socket) => {
+  const connection = await fromNodeSocket(socket, {
     serverVersion: '16.3 (PGlite 0.2.0)',
     auth: {
       method: 'scram-sha-256',
