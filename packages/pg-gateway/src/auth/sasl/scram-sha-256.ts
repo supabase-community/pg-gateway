@@ -34,8 +34,6 @@ export type ScramSha256AuthOptions = {
   ) => ScramSha256Data | Promise<ScramSha256Data>;
 };
 
-const { subtle } = globalThis.crypto;
-
 /**
  * Creates scram-sha-256 data for password authentication.
  * @see https://www.postgresql.org/docs/current/sasl-authentication.html
@@ -48,16 +46,9 @@ export async function createScramSha256Data(
   crypto.getRandomValues(salt);
 
   const saltedPassword = await pbkdf2(password, salt, iterations, 32, 'SHA-256');
-  // const saltedPassword = pbkdf2Sync(password, saltBuffer, iterations, 32, 'sha256');
-
   const clientKey = await createHmacKey(saltedPassword, 'Client Key', 'SHA-256');
-  // const clientKey = createHmac('sha256', saltedPassword).update('Client Key').digest();
-
   const storedKey = await createHashKey(clientKey, 'SHA-256');
-  // const storedKey = createHash('sha256').update(clientKey).digest();
-
   const serverKey = await createHmacKey(saltedPassword, 'Server Key', 'SHA-256');
-  // const serverKey = createHmac('sha256', saltedPassword).update('Server Key').digest();
 
   return {
     salt: encodeBase64(salt),
