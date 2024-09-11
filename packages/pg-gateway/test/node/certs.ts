@@ -1,103 +1,147 @@
-import { spawn, type StdioOptions } from 'node:child_process';
-import { once } from 'node:events';
-import { Readable } from 'node:stream';
+import { encodeBase64 } from '@std/encoding/base64';
+import * as asn1js from 'asn1js';
+import * as pkijs from 'pkijs';
 
-async function readStream(stream: NodeJS.ReadableStream) {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
+const { crypto } = globalThis;
+const { subtle } = crypto;
+
+pkijs.setEngine('web-crypto', new pkijs.CryptoEngine({ crypto }));
+
+export function toPEM(
+  data: ArrayBuffer | Uint8Array,
+  type: 'CERTIFICATE' | 'PRIVATE KEY' | 'CERTIFICATE REQUEST',
+): string {
+  const base64String = encodeBase64(data);
+
+  // Chunk into 64-character lines
+  const lines = base64String.match(/.{1,64}/g) ?? [];
+
+  const header = `-----BEGIN ${type}-----`;
+  const footer = `-----END ${type}-----`;
+
+  return [header, ...lines, footer].join('\n');
 }
 
-async function execOpenSSL(args: string[], fds: { [key: string]: Buffer } = {}) {
-  const stdio: StdioOptions = [
-    'pipe',
-    'pipe',
-    'pipe',
-    ...Object.keys(fds).map(() => 'pipe' as const),
+export async function generateKeyPair() {
+  return subtle.generateKey(
+    {
+      name: 'RSASSA-PKCS1-v1_5',
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: 'SHA-256',
+    },
+    true,
+    ['sign', 'verify'],
+  );
+}
+
+export async function generateCA(CN: string) {
+  const { publicKey, privateKey } = await generateKeyPair();
+
+  const certificate = new pkijs.Certificate();
+
+  certificate.version = 2;
+  certificate.serialNumber = new asn1js.Integer({ value: Date.now() });
+  certificate.issuer = new pkijs.RelativeDistinguishedNames({
+    typesAndValues: [
+      new pkijs.AttributeTypeAndValue({
+        type: '2.5.4.3', // Common Name
+        value: new asn1js.PrintableString({ value: CN }),
+      }),
+    ],
+  });
+  certificate.subject = certificate.issuer;
+  certificate.notBefore.value = new Date();
+  certificate.notAfter.value = new Date();
+  certificate.notAfter.value.setFullYear(certificate.notBefore.value.getFullYear() + 1);
+
+  await certificate.subjectPublicKeyInfo.importKey(publicKey);
+
+  certificate.extensions = [
+    new pkijs.Extension({
+      extnID: '2.5.29.19', // Basic Constraints
+      critical: true,
+      extnValue: new asn1js.OctetString({
+        valueHex: new pkijs.BasicConstraints({ cA: true }).toSchema().toBER(false),
+      }).valueBlock.valueHex,
+    }),
   ];
 
-  const child = spawn('openssl', args, { stdio });
+  await certificate.sign(privateKey, 'SHA-256');
 
-  Object.values(fds).forEach((data, index) => {
-    // Pipe from index 3 for additional file descriptors
-    const fd = index + 3;
+  const caCert = certificate.toSchema(true).toBER(false);
+  const caKey = await subtle.exportKey('pkcs8', privateKey);
 
-    const writeStream = child.stdio[fd];
-
-    if (!writeStream) {
-      throw new Error(`OpenSSL file descriptor ${fd} not available`);
-    }
-
-    if (!('writable' in writeStream) || !writeStream.writable) {
-      throw new Error(`OpenSSL file descriptor ${fd} not writable`);
-    }
-
-    Readable.from([data]).pipe(writeStream);
-  });
-
-  if (!child.stdout || !child.stderr) {
-    throw new Error('OpenSSL process failed to create stdout/stderr');
-  }
-
-  const [stdout, stderr, [exitCode]] = await Promise.all([
-    readStream(child.stdout),
-    readStream(child.stderr),
-    once(child, 'close'),
-  ]);
-
-  if (exitCode !== 0) {
-    throw new Error(`OpenSSL process exited with code ${exitCode}. ${stderr}`);
-  }
-
-  return [stdout, stderr];
+  return { caKey, caCert };
 }
 
-async function generateCA(subject: string) {
-  const [caKey] = await execOpenSSL(['genpkey', '-algorithm', 'RSA']);
-  const [caCert] = await execOpenSSL(
-    ['req', '-new', '-x509', '-key', '/dev/fd/3', '-days', '365', '-subj', subject],
-    { '3': caKey },
+export async function generateCSR(CN: string) {
+  const { publicKey, privateKey } = await generateKeyPair();
+
+  const request = new pkijs.CertificationRequest();
+
+  request.version = 0;
+  request.subject.typesAndValues.push(
+    new pkijs.AttributeTypeAndValue({
+      type: '2.5.4.3', // OID for Common Name (CN)
+      value: new asn1js.PrintableString({ value: CN }),
+    }),
   );
-  return { caKey: new Uint8Array(caKey), caCert: new Uint8Array(caCert) };
+
+  await request.subjectPublicKeyInfo.importKey(publicKey);
+  await request.sign(privateKey, 'SHA-256');
+
+  const key = await subtle.exportKey('pkcs8', privateKey);
+  const csr = request.toSchema().toBER(false);
+
+  return { key, csr };
 }
 
-async function generateCSR(subject: string) {
-  const [key] = await execOpenSSL(['genpkey', '-algorithm', 'RSA']);
-  const [csr] = await execOpenSSL(['req', '-new', '-key', '/dev/fd/3', '-subj', subject], {
-    '3': key,
-  });
-  return { key: new Uint8Array(key), csr: new Uint8Array(csr) };
-}
-
-async function signCert(caCert: Uint8Array, caKey: Uint8Array, csr: Uint8Array) {
-  const [cert] = await execOpenSSL(
-    ['x509', '-req', '-in', '/dev/fd/3', '-CA', '/dev/fd/4', '-CAkey', '/dev/fd/5', '-days', '365'],
-    {
-      '3': Buffer.from(csr),
-      '4': Buffer.from(caCert),
-      '5': Buffer.from(caKey),
-    },
-  );
-  return new Uint8Array(cert);
-}
-
-export async function generateAllCertificates() {
-  const { caKey, caCert } = await generateCA('/CN=My Root CA');
-
-  const { key: serverKey, csr: serverCsr } = await generateCSR('/CN=localhost');
-  const serverCert = await signCert(caCert, caKey, serverCsr);
-
-  const { key: clientKey, csr: clientCsr } = await generateCSR('/CN=postgres');
-  const clientCert = await signCert(caCert, caKey, clientCsr);
-
-  return {
+export async function signCert(caCert: ArrayBuffer, caKey: ArrayBuffer, csr: ArrayBuffer) {
+  const caPrivateKey = await subtle.importKey(
+    'pkcs8',
     caKey,
-    caCert,
-    serverKey,
-    serverCert,
-    clientKey,
-    clientCert,
-  };
+    {
+      name: 'RSASSA-PKCS1-v1_5',
+      hash: { name: 'SHA-256' },
+    },
+    true,
+    ['sign'],
+  );
+
+  const caCertificate = new pkijs.Certificate({ schema: asn1js.fromBER(caCert).result });
+
+  const request = new pkijs.CertificationRequest({ schema: asn1js.fromBER(csr).result });
+
+  // Extract public key from CSR
+  const publicKey = await subtle.importKey(
+    'spki',
+    request.subjectPublicKeyInfo.toSchema().toBER(false),
+    {
+      name: 'RSASSA-PKCS1-v1_5',
+      hash: { name: 'SHA-256' },
+    },
+    true,
+    ['verify'],
+  );
+
+  const certificate = new pkijs.Certificate();
+
+  certificate.version = 2;
+  certificate.serialNumber = new asn1js.Integer({ value: Date.now() });
+
+  certificate.issuer = caCertificate.subject;
+  certificate.subject = request.subject;
+
+  certificate.notBefore.value = new Date();
+  certificate.notAfter.value = new Date();
+  certificate.notAfter.value.setFullYear(certificate.notBefore.value.getFullYear() + 1);
+
+  await certificate.subjectPublicKeyInfo.importKey(publicKey);
+
+  await certificate.sign(caPrivateKey, 'SHA-256');
+
+  const certBytes = certificate.toSchema(true).toBER(false);
+
+  return certBytes;
 }

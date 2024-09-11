@@ -4,7 +4,28 @@ import { type PostgresConnectionOptions, createDuplexPair } from 'pg-gateway';
 import { fromDuplexStream, fromNodeSocket } from 'pg-gateway/node';
 import { describe, expect, it } from 'vitest';
 import { socketFromDuplexStream } from '../util';
-import { generateAllCertificates } from './certs';
+import { generateCA, generateCSR, signCert, toPEM } from './certs';
+
+async function generateAllCertificates() {
+  const { caKey, caCert } = await generateCA('My Root CA');
+
+  const { key: serverKey, csr: serverCsr } = await generateCSR('localhost');
+  const serverCert = await signCert(caCert, caKey, serverCsr);
+
+  const { key: clientKey, csr: clientCsr } = await generateCSR('postgres');
+  const clientCert = await signCert(caCert, caKey, clientCsr);
+
+  const encoder = new TextEncoder();
+
+  return {
+    caKey: encoder.encode(toPEM(caKey, 'PRIVATE KEY')),
+    caCert: encoder.encode(toPEM(caCert, 'CERTIFICATE')),
+    serverKey: encoder.encode(toPEM(serverKey, 'PRIVATE KEY')),
+    serverCert: encoder.encode(toPEM(serverCert, 'CERTIFICATE')),
+    clientKey: encoder.encode(toPEM(clientKey, 'PRIVATE KEY')),
+    clientCert: encoder.encode(toPEM(clientCert, 'CERTIFICATE')),
+  };
+}
 
 const { caCert, serverKey, serverCert, clientKey, clientCert } = await generateAllCertificates();
 
