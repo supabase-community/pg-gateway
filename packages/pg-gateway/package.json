@@ -42,7 +42,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.8.3",
-    "@electric-sql/pglite": "^0.2.6",
+    "@electric-sql/pglite": "^0.2.7",
     "@nodeweb/knex": "^3.1.0-alpha.13",
     "@nodeweb/pg": "^8.12.0-alpha.5",
     "@std/bytes": "npm:@jsr/std__bytes@^1.0.2",

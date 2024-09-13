@@ -1,12 +1,12 @@
 import { decodeBase64, encodeBase64 } from '@std/encoding/base64';
-import { createBackendErrorMessage } from '../../backend-error.js';
+import { BackendError } from '../../backend-error.js';
 import type { BufferReader } from '../../buffer-reader.js';
 import type { BufferWriter } from '../../buffer-writer.js';
 import type { ConnectionState } from '../../connection.types';
 import { createHashKey, createHmacKey, pbkdf2, timingSafeEqual } from '../../crypto.js';
+import { closeSignal } from '../../signals.js';
 import type { AuthFlow } from '../base-auth-flow';
 import { SaslMechanism } from './sasl-mechanism';
-import { closeSignal } from '../../signals.js';
 
 export type ScramSha256Data = {
   salt: string;
@@ -163,11 +163,11 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
     const saslMechanism = this.reader.cstring();
 
     if (saslMechanism !== 'SCRAM-SHA-256') {
-      yield createBackendErrorMessage({
+      yield BackendError.create({
         severity: 'FATAL',
         code: '28000',
         message: 'Unsupported SASL authentication mechanism',
-      });
+      }).flush();
       yield closeSignal;
       return;
     }
@@ -207,11 +207,11 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
       this.step = ScramSha256Step.Completed;
       yield this.createAuthenticationSASLFinal(serverFinalMessage);
     } catch (error) {
-      yield createBackendErrorMessage({
+      yield BackendError.create({
         severity: 'FATAL',
         code: '28000',
         message: (error as Error).message,
-      });
+      }).flush();
       yield closeSignal;
       return;
     }

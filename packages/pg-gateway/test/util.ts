@@ -1,6 +1,8 @@
-import EventEmitter from 'node:events';
-import type { DuplexStream } from 'pg-gateway';
-import { Client } from 'pg';
+import EventEmitter, { once } from 'node:events';
+import { Server, createServer } from 'node:net';
+import { Client, type ClientConfig } from 'pg';
+import type { DuplexStream, PostgresConnectionOptions } from 'pg-gateway';
+import { fromNodeSocket } from 'pg-gateway/node';
 
 /**
  * Creates a passthrough socket object that can be passed
@@ -127,4 +129,46 @@ export class DisposablePgClient extends Client {
   async [Symbol.asyncDispose]() {
     await this.end();
   }
+}
+
+export async function createPostgresClient(config: string | ClientConfig) {
+  const client = new DisposablePgClient(config);
+  await client.connect();
+  return client;
+}
+
+export class DisposableServer extends Server {
+  async [Symbol.asyncDispose]() {
+    await new Promise((resolve, reject) => {
+      this.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(undefined);
+        }
+      });
+    });
+  }
+}
+
+export async function createPostgresServer(options?: PostgresConnectionOptions) {
+  const server = new DisposableServer((socket) => fromNodeSocket(socket, options));
+  // Listen on a random free port
+  server.listen(0);
+  await once(server, 'listening');
+  return server;
+}
+
+export function getPort(server: Server) {
+  const address = server.address();
+
+  if (typeof address !== 'object') {
+    throw new Error(`Invalid server address '${address}'`);
+  }
+
+  if (!address) {
+    throw new Error('Server has no address');
+  }
+
+  return address.port;
 }

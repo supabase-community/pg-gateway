@@ -1,13 +1,13 @@
 import { concat } from '@std/bytes/concat';
 import { crypto } from '@std/crypto';
 import { encodeHex } from '@std/encoding/hex';
-import { createBackendErrorMessage } from '../backend-error.js';
+import { BackendError } from '../backend-error.js';
 import type { BufferReader } from '../buffer-reader.js';
 import type { BufferWriter } from '../buffer-writer.js';
 import type { ConnectionState } from '../connection.types';
 import { BackendMessageCode } from '../message-codes';
-import { BaseAuthFlow } from './base-auth-flow';
 import { closeSignal } from '../signals.js';
+import { BaseAuthFlow } from './base-auth-flow';
 
 export type Md5AuthOptions = {
   method: 'md5';
@@ -76,11 +76,11 @@ export class Md5AuthFlow extends BaseAuthFlow {
     );
 
     if (!isValid) {
-      yield createBackendErrorMessage({
+      yield BackendError.create({
         severity: 'FATAL',
         code: '28P01',
         message: `password authentication failed for user "${this.username}"`,
-      });
+      }).flush();
       yield closeSignal;
       return;
     }

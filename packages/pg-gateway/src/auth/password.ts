@@ -1,4 +1,4 @@
-import { createBackendErrorMessage } from '../backend-error.js';
+import { BackendError } from '../backend-error.js';
 import type { BufferReader } from '../buffer-reader.js';
 import type { BufferWriter } from '../buffer-writer.js';
 import type { ConnectionState } from '../connection.types';
@@ -72,11 +72,11 @@ export class PasswordAuthFlow extends BaseAuthFlow {
     );
 
     if (!isValid) {
-      yield createBackendErrorMessage({
+      yield BackendError.create({
         severity: 'FATAL',
         code: '28P01',
         message: `password authentication failed for user "${this.username}"`,
-      });
+      }).flush();
       yield closeSignal;
       return;
     }
