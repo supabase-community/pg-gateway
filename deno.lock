@@ -8,8 +8,7 @@
       "jsr:@std/testing": "jsr:@std/testing@1.0.1",
       "npm:@biomejs/biome@1.8.3": "npm:@biomejs/biome@1.8.3",
       "npm:@biomejs/biome@^1.8.3": "npm:@biomejs/biome@1.8.3",
-      "npm:@electric-sql/pglite": "npm:@electric-sql/pglite@0.2.6",
-      "npm:@electric-sql/pglite@^0.2.6": "npm:@electric-sql/pglite@0.2.6",
+      "npm:@electric-sql/pglite@^0.2.7": "npm:@electric-sql/pglite@0.2.7",
       "npm:@jsr/std__bytes@^1.0.2": "npm:@jsr/std__bytes@1.0.2",
       "npm:@jsr/std__crypto@^1.0.3": "npm:@jsr/std__crypto@1.0.3",
       "npm:@jsr/std__encoding@^1.0.3": "npm:@jsr/std__encoding@1.0.3",
@@ -153,8 +152,8 @@
           "tough-cookie": "tough-cookie@4.1.4"
         }
       },
-      "@electric-sql/pglite@0.2.6": {
-        "integrity": "sha512-tyWWxj1Z1Pd4BqBZL1ER2SXaCn5s9N0bxTQCAkGaaWe8r9EEe1bNs20RAG3/+ZeBJtDrk8y5xjocactL+4aIXg==",
+      "@electric-sql/pglite@0.2.7": {
+        "integrity": "sha512-8Il//XHTAtZ8VeQF+6P1UjsIoaAJyO4LwOMoXhSFaHpmkwKs63cUhHHNzLzUmcZvP/ZTmlT3+xTiWfU/EyoxwQ==",
         "dependencies": {}
       },
       "@esbuild/aix-ppc64@0.21.5": {
@@ -2056,7 +2055,7 @@
         "packageJson": {
           "dependencies": [
             "npm:@biomejs/biome@1.8.3",
-            "npm:@electric-sql/pglite@^0.2.6",
+            "npm:@electric-sql/pglite@^0.2.7",
             "npm:@total-typescript/tsconfig@^1.0.4",
             "npm:@types/node@^20.14.11",
             "npm:pg-gateway",
@@ -2069,7 +2068,7 @@
         "packageJson": {
           "dependencies": [
             "npm:@biomejs/biome@1.8.3",
-            "npm:@electric-sql/pglite@^0.2.6",
+            "npm:@electric-sql/pglite@^0.2.7",
             "npm:@total-typescript/tsconfig@^1.0.4",
             "npm:@types/node@^20.14.11",
             "npm:pg-gateway",
@@ -2094,7 +2093,7 @@
         "packageJson": {
           "dependencies": [
             "npm:@biomejs/biome@^1.8.3",
-            "npm:@electric-sql/pglite@^0.2.6",
+            "npm:@electric-sql/pglite@^0.2.7",
             "npm:@jsr/std__bytes@^1.0.2",
             "npm:@jsr/std__crypto@^1.0.3",
             "npm:@jsr/std__encoding@^1.0.3",
