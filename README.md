@@ -508,7 +508,7 @@ You can test the connection using `psql`:
 psql -h localhost -U postgres
 ```
 
-You should be prompted for a password (`postgres`) and then brought into the `psql` REPL. At this point you are communicating directly with PGlite.
+You should immediately be brought into the `psql` REPL. At this point you are communicating directly with PGlite.
 
 ### Reverse Proxy using SNI
 
