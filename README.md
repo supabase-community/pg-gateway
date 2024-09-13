@@ -669,12 +669,6 @@ _/etc/hosts_
 
 On Windows this file lives at `C:\Windows\System32\Drivers\etc\hosts`.
 
-## Development
-
-```shell
-npm run dev
-```
-
 ## License
 
 MIT
