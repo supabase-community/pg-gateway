@@ -1,4 +1,4 @@
-import { createBackendErrorMessage } from '../backend-error.js';
+import { BackendError } from '../backend-error.js';
 import type { BufferReader } from '../buffer-reader.js';
 import type { BufferWriter } from '../buffer-writer.js';
 import type { ConnectionState } from '../connection.types';
@@ -45,21 +45,21 @@ export class CertAuthFlow extends BaseAuthFlow {
 
   async *handleClientMessage(message: BufferSource) {
     if (!this.connectionState.tlsInfo) {
-      yield createBackendErrorMessage({
+      yield BackendError.create({
         severity: 'FATAL',
         code: '08000',
         message: `ssl connection required when auth mode is 'certificate'`,
-      });
+      }).flush();
       yield closeSignal;
       return;
     }
 
     if (!this.connectionState.tlsInfo.clientCertificate) {
-      yield createBackendErrorMessage({
+      yield BackendError.create({
         severity: 'FATAL',
         code: '08000',
         message: 'client certificate required',
-      });
+      }).flush();
       yield closeSignal;
       return;
     }
@@ -73,11 +73,11 @@ export class CertAuthFlow extends BaseAuthFlow {
     );
 
     if (!isValid) {
-      yield createBackendErrorMessage({
+      yield BackendError.create({
         severity: 'FATAL',
         code: '08000',
         message: 'client certificate is invalid',
-      });
+      }).flush();
       yield closeSignal;
       return;
     }
