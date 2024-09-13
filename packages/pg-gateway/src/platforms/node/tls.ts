@@ -1,5 +1,6 @@
 import { X509Certificate } from 'node:crypto';
-import { Duplex, once } from 'node:stream';
+import { once } from 'node:events';
+import { Duplex } from 'node:stream';
 import { TLSSocket, type TLSSocketOptions, createSecureContext } from 'node:tls';
 import type { TlsOptions, TlsOptionsCallback } from '../../connection.js';
 import type { TlsInfo } from '../../connection.types.js';

@@ -13,8 +13,9 @@ This acts as a layer in front of your Postgres database (or any other database).
 
 ## Features
 
+- **Cross platform:** Built on web standards, so works in Node.js, Deno, Bun, and even the browser
 - **Authentication:** Supports multiple auth methods including `trust`, `password`, `md5`, `scram-sha-256`, and `cert`
-- **TLS Encryption:** Handles standard TLS (SSL) upgrades with SNI support (useful for [reverse proxying](#reverse-proxy-using-sni))
+- **TLS encryption:** Handles standard TLS (SSL) upgrades with SNI support (useful for [reverse proxying](#reverse-proxy-using-sni))
 - **Modular:** You control the server while the library manages the protocol
 - **Hooks:** Hook into various points in the protocol's lifecycle (auth, query, etc)
 - **Escape hatch:** Access the raw protocol messages at any point in the lifecycle
@@ -26,32 +27,81 @@ _This library is pre-1.0 so expect some breaking changes to the API over time._
 
 This library is designed to give you as much control as possible while still managing the protocol lifecycle.
 
-Start by creating your own TCP server (ie. via `node:net`), then pass the socket into a `PostgresConnection`:
+Start by creating your own TCP server, then pass each incoming stream into a `PostgresConnection`:
+
+### Node.js
 
 ```typescript
 import { createServer } from 'node:net';
-import { PostgresConnection } from 'pg-gateway';
+import { once } from 'node:events';
+import { fromNodeSocket } from 'pg-gateway/node';
 
-// Create a TCP server
+// Create a TCP server and listen for connections
 const server = createServer((socket) => {
-  // `PostgresConnection` will manage the protocol lifecycle
-  const connection = new PostgresConnection(socket);
+  // Returns a `PostgresConnection` which manages the protocol lifecycle
+  const connection = await fromNodeSocket(socket);
 });
 
 // Listen on the desired port
-server.listen(5432, () => {
-  console.log('Server listening on port 5432');
-});
+server.listen(5432);
+await once(server, 'listening');
+console.log('Server listening on port 5432');
 ```
 
-`PostgresConnection` exposes a number of options and hooks as its second argument:
+### Deno
+
+```typescript
+import { fromDenoConn } from 'npm:pg-gateway/deno';
+
+// Create a TCP server and listen for connections
+for await (const conn of Deno.listen({ port: 5432 })) {
+  // Returns a `PostgresConnection` which manages the protocol lifecycle
+  const connection = await fromDenoConn(conn);
+}
+```
+
+### Browser / Other
+
+Under the hood `fromNodeSocket()` and `fromDenoConn()` wrap a `new PostgresConnection()` which accepts a standard web duplex stream:
+
+```typescript
+interface DuplexStream<T = unknown> {
+  readable: ReadableStream<T>;
+  writable: WritableStream<T>;
+}
+
+const duplex: DuplexStream<Uint8Array> = ...
+
+const connection = new PostgresConnection(duplex);
+```
+
+So as long as you have a `ReadableStream` and `WritableStream` that represent two sides of a bidirectional channel, it will work with pg-gateway.
+
+> [`WebSocketStream`](https://developer.chrome.com/docs/capabilities/web-apis/websocketstream) is an example of a `DuplexStream` that could be useful here. Unfortunately `WebSocketStream` (as opposed to `WebSocket`) is still a Web API proposal and only implemented in Chromium-based browsers (ie. Chrome and Edge). Polyfills are possible, but they lack back-pressure which means in-memory buffers are unbounded.
+
+There is also a utility function `createDuplexPair()` that will create a pair of linked duplex streams in-memory:
+
+```typescript
+import { createDuplexPair } from 'pg-gateway';
+
+const [clientDuplex, serverDuplex] = createDuplexPair<Uint8Array>();
+const connection = new PostgresConnection(serverDuplex);
+
+// read and write to `clientDuplex` to talk to the server
+```
+
+This is useful if you had a browser-based Postgres client that can work with `ReadableStream` and `WritableStream` (see [PG browser test](./packages/pg-gateway/test/browser/pg.test.ts)). You could also use this within tests if, for example, you wanted to use PGlite as your database and you didn't want to spin up an actual TCP server (see [PG Node test](./packages/pg-gateway/test/node/pg.test.ts)).
+
+## Options
+
+`PostgresConnection` (as well as `fromNodeSocket` and `fromDenoConn`) expose a number of options and hooks as their second argument:
 
 ### `serverVersion`
 
 Specifies the version of the server to return back to the client. Can include any arbitrary string.
 
 ```typescript
-const connection = new PostgresConnection(socket, {
+const connection = new PostgresConnection(duplex, {
   serverVersion: '16.3 (MyCustomPG)',
 });
 ```
@@ -63,7 +113,7 @@ Specifies auth configuration, including which auth method you wish to use with c
 - `trust`: No password is requested. Client will be immediately authenticate after startup. This is the default method if unspecified.
 
   ```typescript
-  const connection = new PostgresConnection(socket, {
+  const connection = new PostgresConnection(duplex, {
     auth: {
       method: 'trust',
     },
@@ -73,7 +123,7 @@ Specifies auth configuration, including which auth method you wish to use with c
 - `password`: Password is sent in clear text by the client. Least secure password option.
 
   ```typescript
-  const connection = new PostgresConnection(socket, {
+  const connection = new PostgresConnection(duplex, {
     auth: {
       method: 'password',
       async getClearTextPassword({ username }, state) {
@@ -87,7 +137,7 @@ Specifies auth configuration, including which auth method you wish to use with c
 - `md5`: Password is hashed using Postgres' [nested MD5 algorithm](https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-START-UP) before it is sent to the server.
 
   ```typescript
-  const connection = new PostgresConnection(socket, {
+  const connection = new PostgresConnection(duplex, {
     auth: {
       method: 'md5',
       async getPreHashedPassword({ username }, state) {
@@ -110,7 +160,10 @@ Specifies auth configuration, including which auth method you wish to use with c
 
   // Call this when you first create your user and
   // store it in a DB
-  const preHashedPassword = createPreHashedPassword('my-user', 'my-password');
+  const preHashedPassword = await createPreHashedPassword(
+    'my-user',
+    'my-password'
+  );
   ```
 
   It will produce a `string` containing the md5-hashed password.
@@ -118,7 +171,7 @@ Specifies auth configuration, including which auth method you wish to use with c
 - `scram-sha-256`: A challenge-response scheme that stores passwords in a cryptographically hashed form according to [RFC 7677](https://datatracker.ietf.org/doc/html/rfc7677). This is the most secure and recommended method by Postgres.
 
   ```typescript
-  const connection = new PostgresConnection(socket, {
+  const connection = new PostgresConnection(duplex, {
     auth: {
       method: 'scram-sha-256',
       async getScramSha256Data({ username }, state) {
@@ -141,7 +194,7 @@ Specifies auth configuration, including which auth method you wish to use with c
 
   // Call this when you first create your user and
   // store the auth data in a DB
-  const authData = createScramSha256Data('my-password');
+  const authData = await createScramSha256Data('my-password');
   ```
 
   It will produce a `ScramSha256Data` object that contains the following:
@@ -158,7 +211,7 @@ Specifies auth configuration, including which auth method you wish to use with c
   Requires a TLS connection.
 
   ```typescript
-  const connection = new PostgresConnection(socket, {
+  const connection = new PostgresConnection(duplex, {
     auth: {
       method: 'cert',
     },
@@ -170,7 +223,7 @@ Specifies auth configuration, including which auth method you wish to use with c
 Every auth method also accepts a `validateCredentials()` callback as an escape hatch if you need to handle the comparison logic yourself:
 
 ```typescript
-const connection = new PostgresConnection(socket, {
+const connection = new PostgresConnection(duplex, {
   auth: {
     method: 'password',
     // This method is still required but may be ignored
@@ -223,13 +276,13 @@ Use this only as an escape hatch if you need to perform custom validation logic.
 
 ### `tls`
 
-Like the real Postgres server, TLS connections are established as an upgrade mechanism after the initial handshake (`SSLRequest` message from the client).
+Like the real Postgres server, TLS connections are established as an upgrade mechanism after the initial handshake (`SSLRequest` message from the client). Currently TLS only works in Node.js when using the `fromNodeSocket()` helper. Unfortunately Deno does not yet offer APIs to upgrade a TCP connection to TLS from the server side, so TLS is not yet supported there (but likely in the future).
 
 The `tls` option is an object that contains the following:
 
-- `key`: A `Buffer` containing the TLS private key in PEM format
-- `cert`: A `Buffer` containing the TLS cert chain in PEM format. Includes the TLS cert followed by any intermediate certs (not including root CA).
-- `ca`: A `Buffer` containing the certificate authority (CA) in PEM format. Optional - if omitted, the runtime's built-in CAs will be used.
+- `key`: An `ArrayBuffer` containing the TLS private key in PEM format
+- `cert`: A `ArrayBuffer` containing the TLS cert chain in PEM format. Includes the TLS cert followed by any intermediate certs (not including root CA).
+- `ca`: A `ArrayBuffer` containing the certificate authority (CA) in PEM format. Optional - if omitted, the runtime's built-in CAs will be used.
 - `passphrase` A `string` containing the passphrase for `key`. Optional - only needed if `key` is encrypted.
 
 When this option is passed, the server will require a TLS connection with the client. If the client doesn't send an `SSLRequest` message, the server will close the connection with an error.
@@ -243,7 +296,7 @@ const tls: TlsOptions = {
   ca: readFileSync('ca-cert.pem'),
 };
 
-const connection = new PostgresConnection(socket, {
+const connection = new PostgresConnection(duplex, {
   tls,
 });
 ```
@@ -251,9 +304,9 @@ const connection = new PostgresConnection(socket, {
 The `tls` option can also accept a callback:
 
 ```typescript
-const connection = new PostgresConnection(socket, {
-  tls: async ({ sniServerName }) => {
-    return await getCertsForServer(sniServerName);
+const connection = new PostgresConnection(duplex, {
+  tls: async (serverName) => {
+    return await getCertsForServer(serverName);
   },
 });
 ```
@@ -273,7 +326,7 @@ const tls: TlsOptions = {
   ca: readFileSync('ca-cert.pem'),
 };
 
-const connection = new PostgresConnection(socket, {
+const connection = new PostgresConnection(duplex, {
   tls,
   async onTlsUpgrade({ tlsInfo }) {
     console.log({ tlsInfo });
@@ -288,7 +341,7 @@ This hook is called after the initial startup message has been received from the
 This is called after the connection is upgraded to TLS (if TLS is being used) but before authentication messages are sent to the frontend.
 
 ```typescript
-const connection = new PostgresConnection(socket, {
+const connection = new PostgresConnection(duplex, {
   async onStartup({ clientInfo }) {
     console.log({ clientInfo });
   },
@@ -300,7 +353,7 @@ const connection = new PostgresConnection(socket, {
 This hook is called after a successful authentication has completed. It passes a [`state`](#state) argument which holds connection information gathered so far. The callback can be either synchronous or asynchronous.
 
 ```typescript
-const connection = new PostgresConnection(socket, {
+const connection = new PostgresConnection(duplex, {
   async onAuthenticated(state) {
     console.log(state);
   },
@@ -312,30 +365,30 @@ const connection = new PostgresConnection(socket, {
 This hook gives you access to raw messages at any point in the protocol lifecycle:
 
 ```typescript
-const connection = new PostgresConnection(socket, {
+const connection = new PostgresConnection(duplex, {
   async onMessage(data, state) {
     // Observe or handle raw messages yourself
   },
 });
 ```
 
-1. The first argument contains the raw `Buffer` data in the message
+1. The first argument contains the raw `Uint8Array` data in the message
 2. The second argument contains a [`state`](#state) object which holds connection information gathered so far and can be used to understand where the protocol is at in its lifecycle.
 
 The callback can optionally return raw `Uint8Array` response data that will be sent back to the client:
 
 ```typescript
-const connection = new PostgresConnection(socket, {
+const connection = new PostgresConnection(duplex, {
   async onMessage(data, state) {
     return new Uint8Array(...);
   },
 });
 ```
 
-It can also return multiple `Uint8Array` responses via an `Iterable<Uint8Array>` or `AsyncIterable<Uint8Array>`. This means you can turn this hook into a generator function to asynchronously stream responses back to the client:
+You can also return multiple `Uint8Array` responses via an `Iterable<Uint8Array>` or `AsyncIterable<Uint8Array>`. This means you can turn this hook into a generator function to asynchronously stream responses back to the client:
 
 ```typescript
-const connection = new PostgresConnection(socket, {
+const connection = new PostgresConnection(duplex, {
   async *onMessage(data, state) {
     yield new Uint8Array(...);;
     await new Promise((r) => setTimeout(r, 1000));
@@ -344,7 +397,7 @@ const connection = new PostgresConnection(socket, {
 });
 ```
 
-> **Warning:** By managing the message yourself (returning data), you bypass further processing by the `PostgresConnection` which means some state may not be collected and hooks won't be called depending on where the protocol is at in its lifecycle. If you wish to hook into messages without bypassing further processing, do not return any data from this callback.
+> **Warning:** By managing the message yourself (returning or yielding data), you bypass further processing by the `PostgresConnection` which means some state may not be collected and hooks won't be called depending on where the protocol is at in its lifecycle. If you wish to hook into messages without bypassing further processing, do not return any data from this callback. Alternatively if you wish to prevent further processing without returning any data, return `null`.
 
 See [PGlite](#pglite) for an example on how you might use this.
 
@@ -370,14 +423,15 @@ Over the course of the protocol lifecycle, `pg-gateway` will hold a `state` obje
 
 - `tlsInfo`: object containing TLS connection information (if TLS is being used).
 
-  - `sniServerName`: string containing the [SNI](#reverse-proxy-using-sni) server name sent by the client. This can be `undefined` if the SNI extension was not used by the client.
+  - `serverName`: string containing the [SNI](#reverse-proxy-using-sni) server name sent by the client. This can be `undefined` if the SNI extension was not used by the client.
+  - `clientCertificate`: `Uint8Array` containing the raw client certificate in DER format. This will only exist during mutual TLS (mTLS) when the client sends a certificate via the `cert` auth method.
 
   Note that `tlsInfo` will be `undefined` until a TLS upgrade has completed.
 
 State is available directly on the `PostgresConnection` instance:
 
 ```typescript
-const connection = new PostgresConnection(socket);
+const connection = new PostgresConnection(duplex);
 console.log(connection.state);
 ```
 
@@ -385,13 +439,13 @@ It is also passed as an argument to most hooks for convenience.
 
 ## `detach()`
 
-A `detach()` method exists on the `PostgresConnection` to allow you to completely detach the socket from the `PostgresConnection` and handle all future data processing yourself. This is useful when [reverse proxying](#reverse-proxy-using-sni) to prevent the `PostgresConnection` from continuing to process each message after the proxy connection is established.
+A `detach()` method exists on the `PostgresConnection` to allow you to completely detach the stream from the `PostgresConnection` and handle all future data processing yourself. This is useful when [reverse proxying](#reverse-proxy-using-sni) to prevent the `PostgresConnection` from continuing to process each message after the proxy connection is established.
 
-Calling `detach()` will return the current `Socket` which may be different than the original socket if a TLS upgrade occurred (ie. a `TLSSocket`). The `PostgresConnection` will remove all event listeners from the socket and no further processing will take place.
+Calling `detach()` will return the current `DuplexStream` which may be different than the original duplex if a TLS upgrade occurred. The `PostgresConnection` will no longer buffer any data and no further processing will take place.
 
 ```typescript
-const connection = new PostgresConnection(socket);
-const socket = connection.detach();
+const connection = new PostgresConnection(duplex);
+const newDuplex = connection.detach();
 ```
 
 ## Examples
@@ -405,13 +459,16 @@ With `pg-gateway`, we can serve PGlite over TCP by handling the startup/auth our
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
 import net from 'node:net';
-import { PostgresConnection } from 'pg-gateway';
-
-const db = new PGlite();
+import { fromNodeSocket } from 'pg-gateway/node';
 
 const server = net.createServer((socket) => {
-  const connection = new PostgresConnection(socket, {
-    serverVersion: '16.3 (PGlite 0.2.0)',
+  // Each connection gets a fresh PGlite database,
+  // since PGlite runs in single-user mode
+  // (alternatively you could queue connections)
+  const db = new PGlite();
+
+  const connection = await fromNodeSocket(socket, {
+    serverVersion: '16.3',
 
     auth: {
       // No password required
@@ -421,7 +478,6 @@ const server = net.createServer((socket) => {
     async onStartup() {
       // Wait for PGlite to be ready before further processing
       await db.waitReady;
-      return false;
     },
 
     // Hook into each client message
@@ -452,14 +508,7 @@ You can test the connection using `psql`:
 psql -h localhost -U postgres
 ```
 
-You should be prompted for a password (`postgres`) and then brought into the `psql` REPL. At this point you are communicating directly with PGlite. You can verify that you are connected to PGlite by looking at the server version printed by `psql`:
-
-```
-psql (16.2, server 16.3 (PGlite 0.2.0))
-...
-```
-
-_**Note:** the server version is only displayed by `psql` if it's different than the client version._
+You should be prompted for a password (`postgres`) and then brought into the `psql` REPL. At this point you are communicating directly with PGlite.
 
 ### Reverse Proxy using SNI
 
@@ -475,11 +524,13 @@ _index.ts_
 
 ```typescript
 import { readFile } from 'node:fs/promises';
-import net, { connect, Socket } from 'node:net';
-import { PostgresConnection, TlsOptionsCallback } from 'pg-gateway';
+import { connect, createServer } from 'node:net';
+import { Duplex } from 'node:stream';
+import type { TlsOptionsCallback } from 'pg-gateway';
+import { fromNodeSocket } from 'pg-gateway/node';
 
-const tls: TlsOptionsCallback = async ({ sniServerName }) => {
-  // Optionally serve different certs based on `sniServerName`
+const tls: TlsOptionsCallback = async (serverName) => {
+  // Optionally serve different certs based on SNI `serverName`
   // In this example we'll use a single wildcard cert for all servers (ie. *.db.example.com)
   return {
     key: await readFile('server-key.pem'),
@@ -497,35 +548,23 @@ async function getServerById(id: string) {
   };
 }
 
-const server = net.createServer((socket) => {
-  const connection = new PostgresConnection(socket, {
+const server = createServer((socket) => {
+  const connection = await fromNodeSocket(socket, {
     tls,
     // This hook occurs before startup messages are received from the client,
     // so is a good place to establish proxy connections
     async onTlsUpgrade({ tlsInfo }) {
-      if (!tlsInfo) {
-        connection.sendError({
-          severity: 'FATAL',
-          code: '08000',
-          message: `ssl connection required`,
-        });
-        connection.socket.end();
-        return;
-      }
-
-      if (!tlsInfo.sniServerName) {
-        connection.sendError({
-          severity: 'FATAL',
-          code: '08000',
-          message: `ssl sni extension required`,
-        });
-        connection.socket.end();
+      if (!tlsInfo?.serverName) {
         return;
       }
 
       // In this example the left-most subdomain contains the server ID
       // ie. 12345.db.example.com -> 12345
-      const [serverId] = tlsInfo.sniServerName.split('.');
+      const [serverId] = tlsInfo.serverName.split('.');
+
+      if (!serverId) {
+        return;
+      }
 
       // Lookup the server host/port based on ID
       const serverInfo = await getServerById(serverId);
@@ -534,20 +573,21 @@ const server = net.createServer((socket) => {
       const proxySocket = connect(serverInfo);
 
       // Detach from the `PostgresConnection` to prevent further buffering/processing
-      const socket = connection.detach();
+      const duplex = await connection.detach();
+      const nodeDuplex = Duplex.fromWeb(duplex);
 
       // Pipe data directly between sockets
-      proxySocket.pipe(socket);
-      socket.pipe(proxySocket);
+      proxySocket.pipe(nodeDuplex);
+      nodeDuplex.pipe(proxySocket);
 
-      proxySocket.on('end', () => socket.end());
-      socket.on('end', () => proxySocket.end());
+      proxySocket.on('end', () => nodeDuplex.end());
+      nodeDuplex.on('end', () => proxySocket.end());
 
-      proxySocket.on('error', (err) => socket.destroy(err));
-      socket.on('error', (err) => proxySocket.destroy(err));
+      proxySocket.on('error', (err) => nodeDuplex.destroy(err));
+      nodeDuplex.on('error', (err) => proxySocket.destroy(err));
 
-      proxySocket.on('close', () => socket.destroy());
-      socket.on('close', () => proxySocket.destroy());
+      proxySocket.on('close', () => nodeDuplex.destroy());
+      nodeDuplex.on('close', () => proxySocket.destroy());
     },
   });
 
@@ -601,7 +641,7 @@ npx tsx index.ts
 Finally test the connection using `psql`:
 
 ```shell
-psql "host=localhost port=5432 user=postgres sslmode=required"
+psql "host=localhost port=5432 user=postgres sslmode=require"
 ```
 
 You should be prompted for a password (`postgres`) and then brought into the `psql` REPL. At this point you are communicating with the downstream server through the reverse proxy. You can verify that you are connected to the downstream server by looking at the server version printed by `psql`:
@@ -611,7 +651,7 @@ psql (16.2, server 16.3 (Debian 16.3-1.pgdg120+1))
 ...
 ```
 
-Note that we used `localhost` as the host which resulted in `sniServerName` being `localhost` instead of `12345.db.example.com`. To properly test this, you will need to pass the real host name:
+Note that we used `localhost` as the host which resulted in `serverName` being `localhost` instead of `12345.db.example.com`. To properly test this, you will need to pass the real host name:
 
 ```shell
 psql "host=12345.db.example.com port=5432 user=postgres sslmode=required"

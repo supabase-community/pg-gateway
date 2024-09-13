@@ -145,3 +145,24 @@ export async function signCert(caCert: ArrayBuffer, caKey: ArrayBuffer, csr: Arr
 
   return certBytes;
 }
+
+export async function generateAllCertificates() {
+  const { caKey, caCert } = await generateCA('My Root CA');
+
+  const { key: serverKey, csr: serverCsr } = await generateCSR('localhost');
+  const serverCert = await signCert(caCert, caKey, serverCsr);
+
+  const { key: clientKey, csr: clientCsr } = await generateCSR('postgres');
+  const clientCert = await signCert(caCert, caKey, clientCsr);
+
+  const encoder = new TextEncoder();
+
+  return {
+    caKey: encoder.encode(toPEM(caKey, 'PRIVATE KEY')),
+    caCert: encoder.encode(toPEM(caCert, 'CERTIFICATE')),
+    serverKey: encoder.encode(toPEM(serverKey, 'PRIVATE KEY')),
+    serverCert: encoder.encode(toPEM(serverCert, 'CERTIFICATE')),
+    clientKey: encoder.encode(toPEM(clientKey, 'PRIVATE KEY')),
+    clientCert: encoder.encode(toPEM(clientCert, 'CERTIFICATE')),
+  };
+}

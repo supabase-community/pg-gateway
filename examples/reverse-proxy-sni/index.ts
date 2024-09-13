@@ -1,10 +1,10 @@
 import { readFile } from 'node:fs/promises';
-import net, { connect } from 'node:net';
+import { connect, createServer } from 'node:net';
 import { Duplex } from 'node:stream';
 import type { TlsOptionsCallback } from 'pg-gateway';
 import { fromNodeSocket } from 'pg-gateway/node';
 
-const tls: TlsOptionsCallback = async ({ sniServerName }) => {
+const tls: TlsOptionsCallback = async (serverName) => {
   // Optionally serve different certs based on `sniServerName`
   // In this example we'll use a single wildcard cert for all servers (ie. *.db.example.com)
   return {
@@ -23,41 +23,22 @@ async function getServerById(id: string) {
   };
 }
 
-const server = net.createServer(async (socket) => {
+const server = createServer(async (socket) => {
   const connection = await fromNodeSocket(socket, {
     tls,
     // This hook occurs before startup messages are received from the client,
     // so is a good place to establish proxy connections
     async onTlsUpgrade({ tlsInfo }) {
-      if (!tlsInfo) {
-        connection.sendError({
-          severity: 'FATAL',
-          code: '08000',
-          message: 'ssl connection required',
-        });
-        throw new Error('end socket');
-      }
-
-      if (!tlsInfo.sniServerName) {
-        connection.sendError({
-          severity: 'FATAL',
-          code: '08000',
-          message: 'ssl sni extension required',
-        });
-        throw new Error('end socket');
+      if (!tlsInfo?.serverName) {
+        return;
       }
 
       // In this example the left-most subdomain contains the server ID
       // ie. 12345.db.example.com -> 12345
-      const [serverId] = tlsInfo.sniServerName.split('.');
+      const [serverId] = tlsInfo.serverName.split('.');
 
       if (!serverId) {
-        connection.sendError({
-          severity: 'FATAL',
-          code: '08000',
-          message: 'server id required',
-        });
-        throw new Error('end socket');
+        return;
       }
 
       // Lookup the server host/port based on ID
