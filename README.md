@@ -37,7 +37,7 @@ import { once } from 'node:events';
 import { fromNodeSocket } from 'pg-gateway/node';
 
 // Create a TCP server and listen for connections
-const server = createServer((socket) => {
+const server = createServer(async (socket) => {
   // Returns a `PostgresConnection` which manages the protocol lifecycle
   const connection = await fromNodeSocket(socket);
 });
@@ -458,10 +458,10 @@ With `pg-gateway`, we can serve PGlite over TCP by handling the startup/auth our
 
 ```typescript
 import { PGlite } from '@electric-sql/pglite';
-import net from 'node:net';
+import { createServer } from 'node:net';
 import { fromNodeSocket } from 'pg-gateway/node';
 
-const server = net.createServer((socket) => {
+const server = createServer(async (socket) => {
   // Each connection gets a fresh PGlite database,
   // since PGlite runs in single-user mode
   // (alternatively you could queue connections)
@@ -548,7 +548,7 @@ async function getServerById(id: string) {
   };
 }
 
-const server = createServer((socket) => {
+const server = createServer(async (socket) => {
   const connection = await fromNodeSocket(socket, {
     tls,
     // This hook occurs before startup messages are received from the client,
