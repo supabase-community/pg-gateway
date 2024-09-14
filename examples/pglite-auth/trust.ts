@@ -1,10 +1,10 @@
 import { PGlite } from '@electric-sql/pglite';
-import net from 'node:net';
+import { createServer } from 'node:net';
 import { fromNodeSocket } from 'pg-gateway/node';
 
 const db = new PGlite();
 
-const server = net.createServer(async (socket) => {
+const server = createServer(async (socket) => {
   const connection = await fromNodeSocket(socket, {
     serverVersion: '16.3 (PGlite 0.2.0)',
     auth: {

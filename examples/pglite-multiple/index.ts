@@ -1,6 +1,6 @@
 import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 import { mkdir, readFile } from 'node:fs/promises';
-import net from 'node:net';
+import { createServer } from 'node:net';
 import { type TlsOptionsCallback, createPreHashedPassword } from 'pg-gateway';
 import { fromNodeSocket } from 'pg-gateway/node';
 
@@ -21,7 +21,7 @@ function getIdFromServerName(serverName: string) {
   return id;
 }
 
-const server = net.createServer(async (socket) => {
+const server = createServer(async (socket) => {
   let db: PGliteInterface;
 
   const connection = await fromNodeSocket(socket, {

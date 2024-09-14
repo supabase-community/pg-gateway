@@ -1,16 +1,16 @@
 import { PGlite } from '@electric-sql/pglite';
-import fs from 'node:fs';
-import net from 'node:net';
+import { readFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { fromNodeSocket } from 'pg-gateway/node';
 
 const db = new PGlite();
 
-const server = net.createServer(async (socket) => {
+const server = createServer(async (socket) => {
   const connection = await fromNodeSocket(socket, {
     serverVersion: '16.3 (PGlite 0.2.0)',
     tls: {
-      key: fs.readFileSync('key.pem'),
-      cert: fs.readFileSync('cert.pem'),
+      key: await readFile('key.pem'),
+      cert: await readFile('cert.pem'),
     },
     auth: {
       method: 'cert',
