@@ -10,7 +10,7 @@ declare module 'pg/lib/crypto/sasl' {
   export function continueSession(
     session: Session,
     password: string,
-    serverData: string
+    serverData: string,
   ): Promise<void>;
   export function finalizeSession(session: Session, serverData: string): void;
 }

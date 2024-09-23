@@ -1,0 +1,28 @@
+name: Tests
+on:
+  push:
+    branches: [main, next]
+  pull_request:
+    branches: [main, next]
+jobs:
+  test:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build libs
+        run: npm run build
+      - name: Get playwright version
+        run: echo "PLAYWRIGHT_VERSION=$(npm ls @playwright/test | grep @playwright | sed 's/.*@//')" >> $GITHUB_ENV
+      - name: Setup playwright
+        uses: ./.github/actions/setup-playwright
+        with:
+          version: ${{ env.PLAYWRIGHT_VERSION }}
+      - name: Tests
+        run: npm run test

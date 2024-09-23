@@ -1,8 +1,10 @@
 import { readFile } from 'node:fs/promises';
-import net, { connect, Socket } from 'node:net';
-import { PostgresConnection, TlsOptionsCallback } from '../../src';
+import { connect, createServer } from 'node:net';
+import { Duplex } from 'node:stream';
+import type { TlsOptionsCallback } from 'pg-gateway';
+import { fromNodeSocket } from 'pg-gateway/node';
 
-const tls: TlsOptionsCallback = async ({ sniServerName }) => {
+const tls: TlsOptionsCallback = async (serverName) => {
   // Optionally serve different certs based on `sniServerName`
   // In this example we'll use a single wildcard cert for all servers (ie. *.db.example.com)
   return {
@@ -21,35 +23,23 @@ async function getServerById(id: string) {
   };
 }
 
-const server = net.createServer((socket) => {
-  const connection = new PostgresConnection(socket, {
+const server = createServer(async (socket) => {
+  const connection = await fromNodeSocket(socket, {
     tls,
     // This hook occurs before startup messages are received from the client,
     // so is a good place to establish proxy connections
     async onTlsUpgrade({ tlsInfo }) {
-      if (!tlsInfo) {
-        connection.sendError({
-          severity: 'FATAL',
-          code: '08000',
-          message: `ssl connection required`,
-        });
-        connection.socket.end();
-        return;
-      }
-
-      if (!tlsInfo.sniServerName) {
-        connection.sendError({
-          severity: 'FATAL',
-          code: '08000',
-          message: `ssl sni extension required`,
-        });
-        connection.socket.end();
+      if (!tlsInfo?.serverName) {
         return;
       }
 
       // In this example the left-most subdomain contains the server ID
       // ie. 12345.db.example.com -> 12345
-      const [serverId] = tlsInfo.sniServerName.split('.');
+      const [serverId] = tlsInfo.serverName.split('.');
+
+      if (!serverId) {
+        return;
+      }
 
       // Lookup the server host/port based on ID
       const serverInfo = await getServerById(serverId);
@@ -58,20 +48,21 @@ const server = net.createServer((socket) => {
       const proxySocket = connect(serverInfo);
 
       // Detach from the `PostgresConnection` to prevent further buffering/processing
-      const socket = connection.detach();
+      const duplex = await connection.detach();
+      const nodeDuplex = Duplex.fromWeb(duplex);
 
       // Pipe data directly between sockets
-      proxySocket.pipe(socket);
-      socket.pipe(proxySocket);
+      proxySocket.pipe(nodeDuplex);
+      nodeDuplex.pipe(proxySocket);
 
-      proxySocket.on('end', () => socket.end());
-      socket.on('end', () => proxySocket.end());
+      proxySocket.on('end', () => nodeDuplex.end());
+      nodeDuplex.on('end', () => proxySocket.end());
 
-      proxySocket.on('error', (err) => socket.destroy(err));
-      socket.on('error', (err) => proxySocket.destroy(err));
+      proxySocket.on('error', (err) => nodeDuplex.destroy(err));
+      nodeDuplex.on('error', (err) => proxySocket.destroy(err));
 
-      proxySocket.on('close', () => socket.destroy());
-      socket.on('close', () => proxySocket.destroy());
+      proxySocket.on('close', () => nodeDuplex.destroy());
+      nodeDuplex.on('close', () => proxySocket.destroy());
     },
   });
 

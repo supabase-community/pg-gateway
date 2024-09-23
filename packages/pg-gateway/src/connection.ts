@@ -1,129 +1,44 @@
-import { Socket } from 'node:net';
-import { createSecureContext, TLSSocket, TLSSocketOptions } from 'node:tls';
-import { BufferReader } from 'pg-protocol/dist/buffer-reader';
-import { Writer } from 'pg-protocol/dist/buffer-writer';
-import { generateMd5Salt } from './util.js';
-
-export const enum FrontendMessageCode {
-  Query = 0x51, // Q
-  Parse = 0x50, // P
-  Bind = 0x42, // B
-  Execute = 0x45, // E
-  FunctionCall = 0x46, // F
-  Flush = 0x48, // H
-  Close = 0x43, // C
-  Describe = 0x44, // D
-  CopyFromChunk = 0x64, // d
-  CopyDone = 0x63, // c
-  CopyData = 0x64, // d
-  CopyFail = 0x66, // f
-  Password = 0x70, // p
-  Sync = 0x53, // S
-  Terminate = 0x58, // X
-}
-
-export const enum BackendMessageCode {
-  DataRow = 0x44, // D
-  ParseComplete = 0x31, // 1
-  BindComplete = 0x32, // 2
-  CloseComplete = 0x33, // 3
-  CommandComplete = 0x43, // C
-  ReadyForQuery = 0x5a, // Z
-  NoData = 0x6e, // n
-  NotificationResponse = 0x41, // A
-  AuthenticationResponse = 0x52, // R
-  ParameterStatus = 0x53, // S
-  BackendKeyData = 0x4b, // K
-  ErrorMessage = 0x45, // E
-  NoticeMessage = 0x4e, // N
-  RowDescriptionMessage = 0x54, // T
-  ParameterDescriptionMessage = 0x74, // t
-  PortalSuspended = 0x73, // s
-  ReplicationStart = 0x57, // W
-  EmptyQuery = 0x49, // I
-  CopyIn = 0x47, // G
-  CopyOut = 0x48, // H
-  CopyDone = 0x63, // c
-  CopyData = 0x64, // d
-}
-
-/**
- * Modified from pg-protocol to require certain fields.
- */
-export interface BackendError {
-  severity: 'ERROR' | 'FATAL' | 'PANIC';
-  code: string;
-  message: string;
-  detail?: string;
-  hint?: string;
-  position?: string;
-  internalPosition?: string;
-  internalQuery?: string;
-  where?: string;
-  schema?: string;
-  table?: string;
-  column?: string;
-  dataType?: string;
-  constraint?: string;
-  file?: string;
-  line?: string;
-  routine?: string;
-}
-
-export type CleartextPasswordCredentials = {
-  authMode: 'cleartextPassword';
-  user: string;
-  password: string;
-};
-
-export type Md5PasswordCredentials = {
-  authMode: 'md5Password';
-  user: string;
-  hash: string;
-  salt: Uint8Array;
-};
-
-export type Credentials = CleartextPasswordCredentials | Md5PasswordCredentials;
+import type { AuthFlow } from './auth/base-auth-flow.js';
+import { type AuthOptions, createAuthFlow } from './auth/index.js';
+import { BackendError } from './backend-error.js';
+import { BufferReader } from './buffer-reader.js';
+import { BufferWriter } from './buffer-writer.js';
+import {
+  type ClientParameters,
+  type ConnectionState,
+  ServerStep,
+  type TlsInfo,
+} from './connection.types.js';
+import { AsyncIterableWithMetadata } from './iterable-util.js';
+import { MessageBuffer } from './message-buffer.js';
+import { BackendMessageCode, FrontendMessageCode } from './message-codes.js';
+import { type ConnectionSignal, closeSignal, tlsUpgradeSignal } from './signals.js';
+import { type DuplexStream, toAsyncIterator } from './streams.js';
 
 export type TlsOptions = {
-  key: Buffer;
-  cert: Buffer;
-  ca?: Buffer;
+  key: ArrayBuffer;
+  cert: ArrayBuffer;
+  ca?: ArrayBuffer;
   passphrase?: string;
 };
 
-export type TlsOptionsCallback = (
-  tlsInfo: TlsInfo
-) => TlsOptions | Promise<TlsOptions>;
+export type TlsOptionsCallback = (serverName?: string) => TlsOptions | Promise<TlsOptions>;
 
 export type PostgresConnectionOptions = {
   /**
    * The server version to send to the frontend.
    */
-  serverVersion?: string;
+  serverVersion?: string | ((state: ConnectionState) => string | Promise<string>);
 
   /**
    * The authentication mode for the server.
    */
-  authMode?: 'none' | 'cleartextPassword' | 'md5Password' | 'certificate';
+  auth?: AuthOptions;
 
   /**
    * TLS options for when clients send an SSLRequest.
    */
   tls?: TlsOptions | TlsOptionsCallback;
-
-  /**
-   * Validates authentication credentials based on the auth mode set.
-   *
-   * Includes `state` which holds connection information gathered so far.
-   *
-   * Callback should return `true` if credentials are valid and
-   * `false` if credentials are invalid.
-   */
-  validateCredentials?(
-    credentials: Credentials,
-    state: State
-  ): boolean | Promise<boolean>;
 
   /**
    * Callback after the connection has been upgraded to TLS.
@@ -133,7 +48,7 @@ export type PostgresConnectionOptions = {
    * This will be called before the startup message is received from the frontend
    * (if TLS is being used) so is a good place to establish proxy connections if desired.
    */
-  onTlsUpgrade?(state: State): void | Promise<void>;
+  onTlsUpgrade?(state: ConnectionState): void | Promise<void>;
 
   /**
    * Callback after the initial startup message has been received from the frontend.
@@ -143,22 +58,15 @@ export type PostgresConnectionOptions = {
    * This is called after the connection is upgraded to TLS (if TLS is being used)
    * but before authentication messages are sent to the frontend.
    *
-   * Callback should return `true` to indicate that it has responded to the startup
-   * message and no further processing should occur. Return `false` to continue
-   * built-in processing.
-   *
-   * **Warning:** By managing the post-startup response yourself (returning `true`),
-   * you bypass further processing by the `PostgresConnection` which means some state
-   * may not be collected and hooks won't be called.
    */
-  onStartup?(state: State): boolean | Promise<boolean>;
+  onStartup?(state: ConnectionState): void | Promise<void>;
 
   /**
    * Callback after a successful authentication has completed.
    *
    * Includes `state` which holds connection information gathered so far.
    */
-  onAuthenticated?(state: State): void | Promise<void>;
+  onAuthenticated?(state: ConnectionState): void | Promise<void>;
 
   /**
    * Callback for every message received from the frontend.
@@ -167,15 +75,19 @@ export type PostgresConnectionOptions = {
    * Includes `state` which holds connection information gathered so far and
    * can be used to understand where the protocol is at in its lifecycle.
    *
-   * Callback should return `true` to indicate that it has responded to the message
-   * and no further processing should occur. Return `false` to continue
-   * built-in processing.
+   * Callback can optionally return raw `Uint8Array` response data that will
+   * be sent back to the client. It can also return multiple `Uint8Array`
+   * responses via an `Iterable<Uint8Array>` or `AsyncIterable<Uint8Array>`.
+   * This means you can turn this hook into a generator function to
+   * asynchronously stream responses back to the client.
    *
-   * **Warning:** By managing the message yourself (returning `true`), you bypass further
+   * **Warning:** By managing the message yourself (returning data), you bypass further
    * processing by the `PostgresConnection` which means some state may not be collected
    * and hooks won't be called depending on where the protocol is at in its lifecycle.
+   * If you wish to hook into messages without bypassing further processing, do not return
+   * any data from this callback.
    */
-  onMessage?(data: Uint8Array, state: State): boolean | Promise<boolean>;
+  onMessage?(data: Uint8Array, state: ConnectionState): MessageResponse | Promise<MessageResponse>;
 
   /**
    * Callback for every frontend query message.
@@ -187,560 +99,430 @@ export type PostgresConnectionOptions = {
    * TODO: change return signature to be more developer-friendly
    * and then translate to wire protocol.
    */
-  onQuery?(query: string, state: State): Uint8Array | Promise<Uint8Array>;
+  onQuery?(query: string, state: ConnectionState): Uint8Array | Promise<Uint8Array>;
 };
 
-export type ClientParameters = {
-  user: string;
-  [key: string]: string;
+/**
+ * Platform-specific adapters for handling features like TLS upgrades.
+ *
+ * Some platform helpers like `fromNodeSocket()` will implement these
+ * for you.
+ */
+export type PostgresConnectionAdapters = {
+  /**
+   * Implements the TLS upgrade logic for the stream.
+   */
+  upgradeTls?(
+    duplex: DuplexStream<Uint8Array>,
+    options: TlsOptions | TlsOptionsCallback,
+    requestCert?: boolean,
+  ): Promise<{
+    duplex: DuplexStream<Uint8Array>;
+    tlsInfo: TlsInfo;
+  }>;
 };
 
-export type ClientInfo = {
-  majorVersion: number;
-  minorVersion: number;
-  parameters: ClientParameters;
-};
-
-export type TlsInfo = {
-  sniServerName?: string;
-};
-
-export type State = {
-  hasStarted: boolean;
-  isAuthenticated: boolean;
-  clientInfo?: ClientInfo;
-  tlsInfo?: TlsInfo;
-};
+export type MessageResponse =
+  | undefined
+  | Uint8Array
+  | Iterable<Uint8Array>
+  | AsyncIterable<Uint8Array>;
 
 export default class PostgresConnection {
-  secureSocket?: TLSSocket;
+  private step: ServerStep = ServerStep.AwaitingInitialMessage;
+  options: PostgresConnectionOptions & {
+    auth: NonNullable<PostgresConnectionOptions['auth']>;
+  };
+  authFlow?: AuthFlow;
   hasStarted = false;
   isAuthenticated = false;
-  writer = new Writer();
-  reader = new BufferReader();
-  md5Salt = generateMd5Salt();
-  clientInfo?: ClientInfo;
+  detached = false;
+  bufferWriter = new BufferWriter();
+  bufferReader = new BufferReader();
+  clientParams?: ClientParameters;
   tlsInfo?: TlsInfo;
-
-  private boundDataHandler: (data: Buffer) => Promise<void>;
-
-  private buffer: Buffer = Buffer.alloc(0);
-  private bufferLength: number = 0;
-  private bufferOffset: number = 0;
+  messageBuffer = new MessageBuffer();
+  // reference to the stream writer when processing data
+  streamWriter?: WritableStreamDefaultWriter<Uint8Array>;
 
   constructor(
-    public socket: Socket,
-    public options: PostgresConnectionOptions = {}
+    public duplex: DuplexStream<Uint8Array>,
+    options: PostgresConnectionOptions = {},
+    public adapters: PostgresConnectionAdapters = {},
   ) {
-    if (!options.authMode) {
-      options.authMode = 'md5Password';
+    this.options = {
+      auth: { method: 'trust' },
+      ...options,
+    };
+    if (this.options.tls && !this.adapters.upgradeTls) {
+      throw new Error(
+        'TLS options are only available when upgradeTls() is implemented. Did you mean to use fromNodeSocket()?',
+      );
     }
-
-    this.boundDataHandler = this.handleData.bind(this);
-    this.createSocketHandlers(socket);
+    this.init(duplex);
   }
 
-  get state(): State {
+  get state(): ConnectionState {
     return {
       hasStarted: this.hasStarted,
       isAuthenticated: this.isAuthenticated,
-      clientInfo: this.clientInfo,
+      clientParams: this.clientParams,
       tlsInfo: this.tlsInfo,
+      step: this.step,
     };
   }
 
-  createSocketHandlers(socket: Socket) {
-    socket.on('data', this.boundDataHandler);
-  }
-
-  removeSocketHandlers(socket: Socket) {
-    socket.off('data', this.boundDataHandler);
-  }
-
-  /**
-   * Detaches the `PostgresConnection` from the socket.
-   * After calling this, no more handlers will be called
-   * and data will no longer be buffered.
-   *
-   * @returns The underlying socket (which could have been upgraded to a `TLSSocket`)
-   */
-  detach() {
-    this.removeSocketHandlers(this.socket);
-    return this.socket;
-  }
-
-  /**
-   * Processes incoming data by buffering it and parsing messages.
-   *
-   * Inspired by https://github.com/brianc/node-postgres/blob/54eb0fa216aaccd727765641e7d1cf5da2bc483d/packages/pg-protocol/src/parser.ts#L91-L119
-   */
-  async handleData(data: Buffer) {
-    // Wrap in try-catch to prevent server from crashing during exceptions
+  async init(duplex: DuplexStream<Uint8Array>) {
     try {
-      this.mergeBuffer(data);
+      const signal = await this.processData(duplex);
 
-      const bufferFullLength = this.bufferOffset + this.bufferLength;
-      let offset = this.bufferOffset;
-
-      // The initial message only has a 4 byte header containing the message length
-      // while all subsequent messages have a 5 byte header containing first a single
-      // byte code then a 4 byte message length
-      const codeLength = !this.hasStarted ? 0 : 1;
-      const headerLength = 4 + codeLength;
-
-      // If we have enough buffer to read the message header
-      while (offset + headerLength <= bufferFullLength) {
-        // The length passed in the message header
-        const length = this.buffer.readUInt32BE(offset + codeLength);
-
-        // The length passed in the message header does not include the first single
-        // byte code, so we account for it here
-        const fullMessageLength = codeLength + length;
-
-        // If we have enough buffer to read the entire message
-        if (offset + fullMessageLength <= bufferFullLength) {
-          // Create a Buffer view that points to the same memory as the main buffer,
-          // but crops it at the message boundaries
-          const messageData = this.buffer.subarray(offset, fullMessageLength);
-
-          // Process the message
-          await this.handleMessage(messageData);
-
-          // Move offset pointer
-          offset += fullMessageLength;
-        } else {
-          break;
-        }
+      if (this.detached) {
+        return;
       }
 
-      if (offset === bufferFullLength) {
-        // No more use for the buffer
-        this.buffer = Buffer.alloc(0);
-        this.bufferLength = 0;
-        this.bufferOffset = 0;
-      } else {
-        // Adjust the cursors of remainingBuffer
-        this.bufferLength = bufferFullLength - offset;
-        this.bufferOffset = offset;
+      if (signal === tlsUpgradeSignal) {
+        if (!this.options.tls) {
+          throw new Error('Upgrading TLS but TLS options are not available');
+        }
+        if (!this.adapters.upgradeTls) {
+          throw new Error('Upgrading TLS but upgradeTls is not implemented');
+        }
+
+        const requestCert = this.options.auth.method === 'cert';
+
+        const { duplex: secureDuplex, tlsInfo } = await this.adapters.upgradeTls(
+          duplex,
+          this.options.tls,
+          requestCert,
+        );
+
+        this.duplex = secureDuplex;
+        this.tlsInfo = tlsInfo;
+        this.messageBuffer = new MessageBuffer();
+
+        await this.options.onTlsUpgrade?.(this.state);
+
+        if (this.detached) {
+          return;
+        }
+
+        await this.init(secureDuplex);
+        return;
+      }
+
+      if (signal === closeSignal) {
+        await this.duplex.writable.close();
+        return;
       }
     } catch (err) {
-      console.error(err);
+      if (err instanceof BackendError) {
+        const writer = this.duplex.writable.getWriter();
+        await writer.write(err.flush());
+        writer.releaseLock();
+        await this.duplex.writable.close();
+      } else {
+        // ignore ABORT_ERR errors which are common, like a user closing its terminal while running a psql session
+        if (!(err instanceof Error && 'code' in err && err.code === 'ABORT_ERR')) {
+          console.error(err);
+        }
+        await this.duplex.writable.abort();
+      }
     }
   }
-
   /**
-   * Merges new data with the existing buffer.
+   * Detaches the `PostgresConnection` from the stream.
+   * After calling this, data will no longer be buffered
+   * and all processing will halt.
    *
-   * Inspired by https://github.com/brianc/node-postgres/blob/54eb0fa216aaccd727765641e7d1cf5da2bc483d/packages/pg-protocol/src/parser.ts#L121-L152
+   * Useful when proxying. You can detach at a certain point
+   * (like TLS upgrade) to prevent further buffering/processing
+   * when your goal is to pipe future messages downstream.
    */
-  private mergeBuffer(buffer: Buffer): void {
-    // If we have left over buffer from the last packet
-    if (this.bufferLength > 0) {
-      const newLength = this.bufferLength + buffer.byteLength;
-      const newFullLength = newLength + this.bufferOffset;
+  async detach() {
+    this.detached = true;
 
-      if (newFullLength > this.buffer.byteLength) {
-        // We can't concat the new buffer with the remaining one
-        let newBuffer: Buffer;
-        if (
-          newLength <= this.buffer.byteLength &&
-          this.bufferOffset >= this.bufferLength
-        ) {
-          // We can move the relevant part to the beginning of the buffer instead of allocating a new buffer
-          newBuffer = this.buffer;
-        } else {
-          // Allocate a new larger buffer
-          let newBufferLength = this.buffer.byteLength * 2;
-          while (newLength >= newBufferLength) {
-            newBufferLength *= 2;
+    // TODO: inject lingering `messageBuffer` (if any) back
+    // onto stream to prevent data loss
+    return this.duplex;
+  }
+
+  async processData(duplex: DuplexStream<Uint8Array>): Promise<ConnectionSignal | undefined> {
+    this.streamWriter = duplex.writable.getWriter();
+    try {
+      for await (const data of toAsyncIterator(duplex.readable, { preventCancel: true })) {
+        this.messageBuffer.mergeBuffer(data);
+        for await (const clientMessage of this.messageBuffer.processMessages(this.hasStarted)) {
+          for await (const responseMessage of this.handleClientMessage(clientMessage)) {
+            if (this.detached) {
+              return;
+            }
+            if (responseMessage === tlsUpgradeSignal) {
+              return tlsUpgradeSignal;
+            }
+            if (responseMessage === closeSignal) {
+              return closeSignal;
+            }
+            await this.streamWriter.write(responseMessage);
           }
-          newBuffer = Buffer.allocUnsafe(newBufferLength);
         }
-        // Move the remaining buffer to the new one
-        this.buffer.copy(
-          newBuffer,
-          0,
-          this.bufferOffset,
-          this.bufferOffset + this.bufferLength
-        );
-        this.buffer = newBuffer;
-        this.bufferOffset = 0;
       }
-      // Concat the new buffer with the remaining one
-      buffer.copy(this.buffer, this.bufferOffset + this.bufferLength);
-      this.bufferLength = newLength;
-    } else {
-      this.buffer = buffer;
-      this.bufferOffset = 0;
-      this.bufferLength = buffer.byteLength;
+    } finally {
+      this.streamWriter.releaseLock();
     }
   }
 
-  /**
-   * Processes a single PG protocol message.
-   */
-  async handleMessage(data: Buffer) {
-    this.reader.setBuffer(0, data);
+  async *handleClientMessage(
+    message: Uint8Array,
+  ): AsyncGenerator<Uint8Array | ConnectionSignal, void, undefined> {
+    this.bufferReader.setBuffer(message);
 
-    // If the `onMessage()` hook returns `true`, it managed this response so skip further processing
-    // We must pause/resume the socket before/after each hook to prevent race conditions
-    this.socket.pause();
-    const messageSkip = await this.options.onMessage?.(data, this.state);
-    this.socket.resume();
+    const messageResponse = await this.options.onMessage?.(message, this.state);
 
-    if (!this.hasStarted) {
-      if (this.isSslRequest(data)) {
-        // `onMessage()` returned true, so skip further processing
-        if (messageSkip) {
-          return;
-        }
+    // Returning any value indicates no further processing
+    let skipProcessing = messageResponse !== undefined;
 
-        // If no TLS options are set, respond with 'N' to indicate TLS is not supported
-        if (!this.options.tls) {
-          this.writer.addString('N');
-          const result = this.writer.flush();
-          this.sendData(result);
-          return;
-        }
+    // A `Uint8Array` or `Iterator<Uint8Array>` or `AsyncIterator<Uint8Array>`
+    // can be returned that contains raw message response data
+    if (messageResponse) {
+      const iterableResponse = new AsyncIterableWithMetadata(
+        messageResponse instanceof Uint8Array ? [messageResponse] : messageResponse,
+      );
 
-        // Otherwise respond with 'S' to indicate it is supported
-        this.writer.addString('S');
-        const result = this.writer.flush();
-        this.sendData(result);
+      // Forward yielded responses back to client
+      yield* iterableResponse;
 
-        // From now on the frontend will communicate via TLS, so upgrade the connection
-        await this.upgradeToTls(this.options.tls);
-        return;
+      // Yield any `Uint8Array` values returned from the iterator
+      if (iterableResponse.returnValue instanceof Uint8Array) {
+        yield iterableResponse.returnValue;
       }
 
-      // Otherwise this is a StartupMessage
+      // Yielding or returning any value within the iterator indicates no further processing
+      skipProcessing =
+        iterableResponse.iterations > 0 || iterableResponse.returnValue !== undefined;
+    }
 
-      // `onMessage()` returned true, so skip further processing
-      if (messageSkip) {
-        // We need to track `hasStarted` despite `messageSkip`, because without it,
-        // our `handleData()` method will incorrectly buffer/parse future messages
+    // the socket was detached during onMessage, we skip further processing
+    if (this.detached) {
+      return;
+    }
+
+    if (skipProcessing) {
+      if (this.isStartupMessage(message)) {
         this.hasStarted = true;
-        return;
       }
-
-      const { majorVersion, minorVersion, parameters } =
-        this.readStartupMessage();
-
-      // user is required
-      if (!parameters.user) {
-        this.sendError({
-          severity: 'FATAL',
-          code: '08000',
-          message: `user is required`,
-        });
-        this.socket.end();
-        return;
-      }
-
-      if (majorVersion !== 3 || minorVersion !== 0) {
-        this.sendError({
-          severity: 'FATAL',
-          code: '08000',
-          message: `Unsupported protocol version ${majorVersion.toString()}.${minorVersion.toString()}`,
-        });
-        this.socket.end();
-        return;
-      }
-
-      this.clientInfo = {
-        majorVersion,
-        minorVersion,
-        parameters: {
-          user: parameters.user,
-          ...parameters,
-        },
-      };
-
-      this.hasStarted = true;
-
-      // We must pause/resume the socket before/after each hook to prevent race conditions
-      this.socket.pause();
-      const startupSkip = await this.options.onStartup?.(this.state);
-      this.socket.resume();
-
-      // `onStartup()` returned true, so skip further processing
-      if (startupSkip) {
-        return;
-      }
-
-      // Handle authentication modes
-      switch (this.options.authMode) {
-        case 'none': {
-          await this.completeAuthentication();
-          break;
-        }
-        case 'cleartextPassword': {
-          this.sendAuthenticationCleartextPassword();
-          break;
-        }
-        case 'md5Password': {
-          this.sendAuthenticationMD5Password(this.md5Salt);
-          break;
-        }
-        case 'certificate': {
-          if (!this.secureSocket) {
-            this.sendError({
-              severity: 'FATAL',
-              code: '08000',
-              message: `ssl connection required when auth mode is 'certificate'`,
-            });
-            this.socket.end();
-            return;
-          }
-
-          if (!this.secureSocket.authorized) {
-            this.sendError({
-              severity: 'FATAL',
-              code: '08000',
-              message: `client certificate is invalid`,
-            });
-            this.socket.end();
-            return;
-          }
-
-          const cert = this.secureSocket.getPeerCertificate();
-          const clientCN = cert.subject.CN;
-
-          if (clientCN !== this.clientInfo.parameters.user) {
-            this.sendError({
-              severity: 'FATAL',
-              code: '08000',
-              message: `client certificate CN '${clientCN}' does not match user '${this.clientInfo.parameters.user}'`,
-            });
-            this.socket.end();
-            return;
-          }
-
-          // We must pause/resume the socket before/after each hook to prevent race conditions
-          this.socket.pause();
-          await this.completeAuthentication();
-          this.socket.resume();
-          break;
-        }
-      }
-
       return;
     }
 
-    // `onMessage()` returned true, so skip further processing
-    if (messageSkip) {
+    switch (this.step) {
+      case ServerStep.AwaitingInitialMessage:
+        if (this.isSslRequest(message)) {
+          yield* this.handleSslRequest();
+        } else if (this.isStartupMessage(message)) {
+          // Guard against SSL connection not being established when `tls` is enabled
+          if (this.options.tls && !this.tlsInfo) {
+            yield BackendError.create({
+              severity: 'FATAL',
+              code: '08P01',
+              message: 'SSL connection is required',
+            }).flush();
+            yield closeSignal;
+            return;
+          }
+          // the next step is determined by handleStartupMessage
+          yield* this.handleStartupMessage(message);
+        } else {
+          throw new Error('Unexpected initial message');
+        }
+        break;
+
+      case ServerStep.PerformingAuthentication: {
+        const authenticationComplete = yield* this.handleAuthenticationMessage(message);
+        if (authenticationComplete) {
+          yield* this.completeAuthentication();
+        }
+        break;
+      }
+
+      case ServerStep.ReadyForQuery:
+        yield* this.handleRegularMessage(message);
+        break;
+
+      default:
+        throw new Error(`Unexpected step: ${this.step}`);
+    }
+  }
+
+  async *handleSslRequest() {
+    if (!this.options.tls || !this.adapters.upgradeTls) {
+      this.bufferWriter.addString('N');
+      yield this.bufferWriter.flush();
       return;
     }
 
-    // Type narrowing for `this.clientInfo` - this condition should never happen
-    if (!this.clientInfo) {
-      this.sendError({
+    // Otherwise respond with 'S' to indicate it is supported
+    this.bufferWriter.addString('S');
+    yield this.bufferWriter.flush();
+
+    // From now on the frontend will communicate via TLS, so upgrade the connection
+    yield tlsUpgradeSignal;
+  }
+
+  async *handleStartupMessage(message: BufferSource) {
+    const { majorVersion, minorVersion, parameters } = this.readStartupMessage();
+
+    // user is required
+    if (!parameters.user) {
+      yield BackendError.create({
         severity: 'FATAL',
-        code: 'XX000',
-        message: `unknown client info after startup`,
-      });
-      this.socket.end();
+        code: '08000',
+        message: 'user is required',
+      }).flush();
+      yield closeSignal;
       return;
     }
 
-    const { authMode } = this.options;
+    if (majorVersion !== 3 || minorVersion !== 0) {
+      yield BackendError.create({
+        severity: 'FATAL',
+        code: '08000',
+        message: `Unsupported protocol version ${majorVersion.toString()}.${minorVersion.toString()}`,
+      }).flush();
+      yield closeSignal;
+      return;
+    }
 
-    const code = this.reader.byte();
-    const length = this.reader.int32();
+    this.clientParams = {
+      user: parameters.user,
+      ...parameters,
+    };
+
+    this.hasStarted = true;
+
+    await this.options.onStartup?.(this.state);
+    // the socket was detached during onStartup, we skip further processing
+    if (this.detached) {
+      return;
+    }
+
+    if (this.options.auth.method === 'trust') {
+      yield* this.completeAuthentication();
+      return;
+    }
+
+    this.authFlow = createAuthFlow({
+      reader: this.bufferReader,
+      writer: this.bufferWriter,
+      username: this.clientParams.user,
+      auth: this.options.auth,
+      connectionState: this.state,
+    });
+
+    this.step = ServerStep.PerformingAuthentication;
+    const initialAuthMessage = this.authFlow.createInitialAuthMessage();
+
+    if (initialAuthMessage) {
+      yield initialAuthMessage;
+    }
+
+    // 'cert' auth flow is an edge case
+    // it doesn't expect a new message from the client so we can directly proceed
+    if (this.options.auth.method === 'cert') {
+      yield* this.authFlow.handleClientMessage(message);
+      if (this.authFlow.isCompleted) {
+        yield* this.completeAuthentication();
+      }
+    }
+  }
+
+  async *handleAuthenticationMessage(message: BufferSource) {
+    const code = this.bufferReader.byte();
+
+    if (code !== FrontendMessageCode.Password) {
+      throw new Error(`Unexpected authentication message code: ${code}`);
+    }
+
+    if (!this.authFlow) {
+      throw new Error('AuthFlow not initialized');
+    }
+
+    yield* this.authFlow.handleClientMessage(message);
+
+    return this.authFlow.isCompleted;
+  }
+
+  private async *handleRegularMessage(message: BufferSource) {
+    const code = this.bufferReader.byte();
 
     switch (code) {
-      case FrontendMessageCode.Password: {
-        switch (authMode) {
-          case 'cleartextPassword': {
-            const password = this.reader.cstring();
-
-            // We must pause/resume the socket before/after each hook to prevent race conditions
-            this.socket.pause();
-            const valid = await this.options.validateCredentials?.(
-              {
-                authMode,
-                user: this.clientInfo.parameters.user,
-                password,
-              },
-              this.state
-            );
-            this.socket.resume();
-
-            if (!valid) {
-              this.sendAuthenticationFailedError();
-              this.socket.end();
-              return;
-            }
-
-            await this.completeAuthentication();
-            return;
-          }
-          case 'md5Password': {
-            const hash = this.reader.cstring();
-            const valid = await this.options.validateCredentials?.(
-              {
-                authMode,
-                user: this.clientInfo.parameters.user,
-                hash,
-                salt: this.md5Salt,
-              },
-              this.state
-            );
-
-            if (!valid) {
-              this.sendAuthenticationFailedError();
-              this.socket.end();
-              return;
-            }
-
-            await this.completeAuthentication();
-            return;
-          }
-        }
+      case FrontendMessageCode.Terminate:
+        yield closeSignal;
         return;
-      }
-      case FrontendMessageCode.Query: {
-        const { query } = this.readQuery();
-
-        console.log(`Query: ${query}`);
-
-        // TODO: call `onQuery` hook to allow consumer to choose how queries are implemented
-
-        this.sendError({
+      default:
+        yield BackendError.create({
           severity: 'ERROR',
           code: '123',
-          message: 'Queries not yet implemented',
-        });
-        this.sendReadyForQuery('idle');
-        return;
-      }
-      // @see https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-TERMINATION
-      case FrontendMessageCode.Terminate: {
-        this.socket.end();
-        return;
-      }
+          message: 'Message code not yet implemented',
+        }).flush();
+        yield this.createReadyForQuery();
     }
+  }
+
+  /**
+   * Checks if the given message is a valid SSL request.
+   *
+   * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-SSLREQUEST
+   */
+  private isSslRequest(message: Uint8Array): boolean {
+    if (message.byteLength !== 8) return false;
+
+    const dataView = new DataView(message.buffer, message.byteOffset, message.byteLength);
+
+    const mostSignificantPart = dataView.getInt16(4);
+    const leastSignificantPart = dataView.getInt16(6);
+
+    return mostSignificantPart === 1234 && leastSignificantPart === 5679;
+  }
+
+  /**
+   * Checks if the given message is a valid StartupMessage.
+   *
+   * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-STARTUPMESSAGE
+   */
+  private isStartupMessage(message: Uint8Array): boolean {
+    if (message.byteLength < 8) return false;
+
+    const dataView = new DataView(message.buffer, message.byteOffset, message.byteLength);
+
+    const length = dataView.getInt32(0);
+    const majorVersion = dataView.getInt16(4);
+    const minorVersion = dataView.getInt16(6);
+
+    return message.byteLength === length && majorVersion === 3 && minorVersion === 0;
   }
 
   /**
    * Completes authentication by forwarding the appropriate messages
    * to the frontend.
    */
-  async completeAuthentication() {
+  async *completeAuthentication() {
     this.isAuthenticated = true;
-    this.sendAuthenticationOk();
+
+    yield this.createAuthenticationOk();
+
+    await this.options.onAuthenticated?.(this.state);
 
     if (this.options.serverVersion) {
-      this.sendParameterStatus('server_version', this.options.serverVersion);
+      let serverVersion: string;
+      if (typeof this.options.serverVersion === 'function') {
+        serverVersion = await this.options.serverVersion(this.state);
+      } else {
+        serverVersion = this.options.serverVersion;
+      }
+      yield this.createParameterStatus('server_version', serverVersion);
     }
 
-    this.sendReadyForQuery('idle');
-
-    // We must pause/resume the socket before/after each hook to prevent race conditions
-    this.socket.pause();
-    await this.options.onAuthenticated?.(this.state);
-    this.socket.resume();
-  }
-
-  isSslRequest(data: Buffer) {
-    const firstBytes = data.readInt16BE(4);
-    const secondBytes = data.readInt16BE(6);
-
-    return firstBytes === 1234 && secondBytes === 5679;
-  }
-
-  async createTlsSocketOptions(
-    optionsOrCallback: TlsOptions | TlsOptionsCallback,
-    tlsInfo: TlsInfo
-  ) {
-    const { key, cert, ca, passphrase } =
-      typeof optionsOrCallback === 'function'
-        ? await optionsOrCallback(tlsInfo)
-        : optionsOrCallback;
-
-    const tlsOptions: TLSSocketOptions = {
-      key,
-      cert,
-      ca,
-      passphrase,
-    };
-
-    // If auth mode is 'certificate' we also need to request a client cert
-    if (this.options.authMode === 'certificate') {
-      tlsOptions.requestCert = true;
-    }
-
-    return tlsOptions;
-  }
-
-  /**
-   * Upgrades TCP socket connection to TLS.
-   */
-  async upgradeToTls(options: TlsOptions | TlsOptionsCallback) {
-    this.tlsInfo = {};
-
-    const originalSocket = this.socket;
-
-    // Pause the socket to avoid losing any data
-    originalSocket.pause();
-
-    // Remove event handlers on the original socket to avoid reading encrypted data
-    this.removeSocketHandlers(originalSocket);
-
-    const tlsSocketOptions = await this.createTlsSocketOptions(
-      options,
-      this.tlsInfo
-    );
-
-    // Create a new TLS socket and pipe the existing TCP socket to it
-    this.secureSocket = new TLSSocket(originalSocket, {
-      ...tlsSocketOptions,
-
-      // This is a server-side TLS socket
-      isServer: true,
-
-      // Record SNI info and re-create TLS options based on it
-      SNICallback: async (sniServerName, callback) => {
-        this.tlsInfo!.sniServerName = sniServerName;
-
-        const tlsSocketOptions = await this.createTlsSocketOptions(
-          options,
-          this.tlsInfo!
-        );
-
-        callback(null, createSecureContext(tlsSocketOptions));
-      },
-    });
-
-    // Also pause the new secure socket until our own hooks complete
-    this.secureSocket.pause();
-
-    // Wait for TLS negotiations to complete
-    await new Promise<void>((resolve) => {
-      // Since we create a TLSSocket out of band from a typical tls.Server,
-      // we have to manually validate client certs ourselves as done here:
-      // https://github.com/nodejs/node/blob/aeaffbb385c9fc756247e6deaa70be8eb8f59496/lib/_tls_wrap.js#L1248
-      this.secureSocket!.on('secure', () => {
-        onServerSocketSecure.bind(this.secureSocket)();
-        resolve();
-      });
-    });
-
-    // Re-create event handlers for the secure socket
-    this.createSocketHandlers(this.secureSocket);
-
-    // Replace socket with the secure socket
-    this.socket = this.secureSocket;
-
-    // TLS upgrade is complete, call hook
-    await this.options.onTlsUpgrade?.(this.state);
-
-    // Pausing the secure socket until `onTlsUpgrade` completes allows the consumer to
-    // asynchronously initialize anything they need before new messages arrive
-    this.secureSocket.resume();
-
-    // Resume the TCP socket
-    originalSocket.resume();
+    this.step = ServerStep.ReadyForQuery;
+    yield this.createReadyForQuery();
   }
 
   /**
@@ -749,14 +531,15 @@ export default class PostgresConnection {
    * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-STARTUPMESSAGE
    */
   readStartupMessage() {
-    const length = this.reader.int32();
-    const majorVersion = this.reader.int16();
-    const minorVersion = this.reader.int16();
+    const length = this.bufferReader.int32();
+    const majorVersion = this.bufferReader.int16();
+    const minorVersion = this.bufferReader.int16();
 
     const parameters: Record<string, string> = {};
 
-    for (let key; (key = this.reader.cstring()) !== ''; ) {
-      parameters[key] = this.reader.cstring();
+    // biome-ignore lint/suspicious/noAssignInExpressions: <explanation>
+    for (let key: string; (key = this.bufferReader.cstring()) !== ''; ) {
+      parameters[key] = this.bufferReader.cstring();
     }
 
     return {
@@ -772,7 +555,7 @@ export default class PostgresConnection {
    * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-QUERY
    */
   readQuery() {
-    const query = this.reader.cstring();
+    const query = this.bufferReader.cstring();
 
     return {
       query,
@@ -780,215 +563,58 @@ export default class PostgresConnection {
   }
 
   /**
-   * Sends raw data to the frontend.
-   */
-  sendData(data: Uint8Array) {
-    this.socket.write(data);
-  }
-
-  /**
-   * Sends an "AuthenticationCleartextPassword" message to the frontend.
-   *
-   * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONCLEARTEXTPASSWORD
-   */
-  sendAuthenticationCleartextPassword() {
-    this.writer.addInt32(3);
-    const response = this.writer.flush(
-      BackendMessageCode.AuthenticationResponse
-    );
-    this.sendData(response);
-  }
-
-  /**
-   * Sends an "AuthenticationMD5Password" message to the frontend.
-   *
-   * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONMD5PASSWORD
-   */
-  sendAuthenticationMD5Password(salt: ArrayBuffer) {
-    this.writer.addInt32(5);
-    this.writer.add(Buffer.from(salt));
-
-    const response = this.writer.flush(
-      BackendMessageCode.AuthenticationResponse
-    );
-
-    this.sendData(response);
-  }
-
-  /**
-   * Sends an "AuthenticationOk" message to the frontend.
+   * Creates an "AuthenticationOk" message.
    *
    * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONOK
    */
-  sendAuthenticationOk() {
-    this.writer.addInt32(0);
-    const response = this.writer.flush(
-      BackendMessageCode.AuthenticationResponse
-    );
-    this.sendData(response);
+  createAuthenticationOk() {
+    this.bufferWriter.addInt32(0);
+    return this.bufferWriter.flush(BackendMessageCode.AuthenticationResponse);
   }
 
   /**
-   * Sends an "ParameterStatus" message to the frontend.
+   * Creates a "ParameterStatus" message.
    * Informs the frontend about the current setting of backend parameters.
    *
    * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-PARAMETERSTATUS
    * @see https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-ASYNC
    */
-  sendParameterStatus(name: string, value: string) {
-    this.writer.addCString(name);
-    this.writer.addCString(value);
-    const response = this.writer.flush(BackendMessageCode.ParameterStatus);
-    this.sendData(response);
+  createParameterStatus(name: string, value: string) {
+    this.bufferWriter.addCString(name);
+    this.bufferWriter.addCString(value);
+    return this.bufferWriter.flush(BackendMessageCode.ParameterStatus);
   }
 
   /**
-   * Sends a "ReadyForQuery" message to the frontend.
+   * Creates a "ReadyForQuery" message.
    *
    * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-READYFORQUERY
    */
-  sendReadyForQuery(
-    transactionStatus: 'idle' | 'transaction' | 'error' = 'idle'
-  ) {
+  createReadyForQuery(transactionStatus: 'idle' | 'transaction' | 'error' = 'idle') {
     switch (transactionStatus) {
       case 'idle':
-        this.writer.addString('I');
+        this.bufferWriter.addString('I');
         break;
       case 'transaction':
-        this.writer.addString('T');
+        this.bufferWriter.addString('T');
         break;
       case 'error':
-        this.writer.addString('E');
+        this.bufferWriter.addString('E');
         break;
       default:
         throw new Error(`Unknown transaction status '${transactionStatus}'`);
     }
 
-    const response = this.writer.flush(BackendMessageCode.ReadyForQuery);
-    this.sendData(response);
+    return this.bufferWriter.flush(BackendMessageCode.ReadyForQuery);
   }
 
-  /**
-   * Sends an error message to the frontend.
-   *
-   * @see https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-ERRORRESPONSE
-   *
-   * For error fields, see https://www.postgresql.org/docs/current/protocol-error-fields.html#PROTOCOL-ERROR-FIELDS
-   */
-  sendError(error: BackendError) {
-    this.writer.addString('S');
-    this.writer.addCString(error.severity);
-
-    this.writer.addString('V');
-    this.writer.addCString(error.severity);
-
-    this.writer.addString('C');
-    this.writer.addCString(error.code);
-
-    this.writer.addString('M');
-    this.writer.addCString(error.message);
-
-    if (error.detail !== undefined) {
-      this.writer.addString('D');
-      this.writer.addCString(error.detail);
-    }
-
-    if (error.hint !== undefined) {
-      this.writer.addString('H');
-      this.writer.addCString(error.hint);
-    }
-
-    if (error.position !== undefined) {
-      this.writer.addString('P');
-      this.writer.addCString(error.position);
-    }
-
-    if (error.internalPosition !== undefined) {
-      this.writer.addString('p');
-      this.writer.addCString(error.internalPosition);
-    }
-
-    if (error.internalQuery !== undefined) {
-      this.writer.addString('q');
-      this.writer.addCString(error.internalQuery);
-    }
-
-    if (error.where !== undefined) {
-      this.writer.addString('W');
-      this.writer.addCString(error.where);
-    }
-
-    if (error.schema !== undefined) {
-      this.writer.addString('s');
-      this.writer.addCString(error.schema);
-    }
-
-    if (error.table !== undefined) {
-      this.writer.addString('t');
-      this.writer.addCString(error.table);
-    }
-
-    if (error.column !== undefined) {
-      this.writer.addString('c');
-      this.writer.addCString(error.column);
-    }
-
-    if (error.dataType !== undefined) {
-      this.writer.addString('d');
-      this.writer.addCString(error.dataType);
-    }
-
-    if (error.constraint !== undefined) {
-      this.writer.addString('n');
-      this.writer.addCString(error.constraint);
-    }
-
-    if (error.file !== undefined) {
-      this.writer.addString('F');
-      this.writer.addCString(error.file);
-    }
-
-    if (error.line !== undefined) {
-      this.writer.addString('L');
-      this.writer.addCString(error.line);
-    }
-
-    if (error.routine !== undefined) {
-      this.writer.addString('R');
-      this.writer.addCString(error.routine);
-    }
-
-    // Add null byte to the end
-    this.writer.addCString('');
-
-    const response = this.writer.flush(BackendMessageCode.ErrorMessage);
-    this.sendData(response);
-  }
-
-  sendAuthenticationFailedError() {
-    this.sendError({
+  createAuthenticationFailedError() {
+    return BackendError.create({
       severity: 'FATAL',
       code: '28P01',
-      message: this.clientInfo?.parameters.user
-        ? `password authentication failed for user "${this.clientInfo.parameters.user}"`
+      message: this.clientParams?.user
+        ? `password authentication failed for user "${this.clientParams.user}"`
         : 'password authentication failed',
-    });
-  }
-}
-
-/**
- * Internal Node.js handler copied and modified from source to validate client certs.
- * https://github.com/nodejs/node/blob/aeaffbb385c9fc756247e6deaa70be8eb8f59496/lib/_tls_wrap.js#L1185-L1203
- *
- * Without this, `authorized` is always `false` on the TLSSocket and we never know if the client cert is valid.
- */
-function onServerSocketSecure(this: TLSSocket & any) {
-  if (this._requestCert) {
-    const verifyError = this._handle.verifyError();
-    if (verifyError) {
-      this.authorizationError = verifyError.code;
-    } else {
-      this.authorized = true;
-    }
+    }).flush();
   }
 }
