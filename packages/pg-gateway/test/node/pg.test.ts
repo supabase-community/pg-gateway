@@ -47,4 +47,15 @@ describe('pg client with pglite', () => {
     const [{ message }] = res.rows;
     expect(message).toBe('Hello world!');
   });
+
+  it('invalid sql throws an error but does not hang', async () => {
+    await using client = await connect();
+    const promise = client.query('invalid sql');
+    await expect(promise).rejects.toThrowError('syntax error at or near "invalid"');
+
+    // Run another query to see if the connection hung
+    const res = await client.query("select 'Hello world!' as message");
+    const [{ message }] = res.rows;
+    expect(message).toBe('Hello world!');
+  });
 });

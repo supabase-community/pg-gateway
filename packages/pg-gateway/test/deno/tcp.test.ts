@@ -3,7 +3,7 @@ import pg from 'npm:pg';
 
 import { expect } from 'jsr:@std/expect';
 import { afterAll, beforeAll, describe, it } from 'jsr:@std/testing/bdd';
-import { PGlite } from 'npm:@electric-sql/pglite';
+import { PGlite } from 'npm:@electric-sql/pglite@^0.2.7';
 import { fromDenoConn } from 'pg-gateway/deno';
 
 const { Client } = pg;
