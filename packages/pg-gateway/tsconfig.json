@@ -1,4 +1,7 @@
 {
   "extends": "@total-typescript/tsconfig/bundler/no-dom/library",
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "compilerOptions": {
+    "types": ["vitest/importMeta"]
+  }
 }

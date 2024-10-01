@@ -13,6 +13,7 @@ export default defineWorkspace([
       name: 'node',
       environment: 'node',
       include: ['test/node/**/*.{test,spec}.ts'],
+      includeSource: ['src/**/*.ts'],
     },
   },
   {
