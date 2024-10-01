@@ -36,21 +36,18 @@ export function isAuthenticationCleartextPassword(message: Uint8Array): boolean 
   // Check message type
   const messageType = view.getUint8(0);
   if (messageType !== MessageType.AuthenticationRequest) {
-    console.log(`Invalid message type: ${messageType}`);
     return false;
   }
 
   // Check message length
   const length = view.getInt32(1);
   if (length !== 8) {
-    console.log(`Invalid message length: ${length}`);
     return false;
   }
 
   // Check authentication type
   const authType = view.getInt32(5);
   if (authType !== 3) {
-    console.log(`Invalid authentication type: ${authType}`);
     return false;
   }
 
