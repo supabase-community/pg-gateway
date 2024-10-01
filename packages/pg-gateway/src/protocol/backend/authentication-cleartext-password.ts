@@ -22,39 +22,6 @@ export function createAuthenticationCleartextPassword(): Uint8Array {
 }
 
 /**
- * Checks if a message is an AuthenticationCleartextPassword message.
- * @see https://www.postgresql.org/docs/17/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONCLEARTEXTPASSWORD
- */
-export function isAuthenticationCleartextPassword(message: Uint8Array): boolean {
-  // Check length
-  if (message.length !== 9) {
-    return false;
-  }
-
-  const view = new DataView(message.buffer, message.byteOffset, message.byteLength);
-
-  // Check message type
-  const messageType = view.getUint8(0);
-  if (messageType !== MessageType.AuthenticationRequest) {
-    return false;
-  }
-
-  // Check message length
-  const length = view.getInt32(1);
-  if (length !== 8) {
-    return false;
-  }
-
-  // Check authentication type
-  const authType = view.getInt32(5);
-  if (authType !== 3) {
-    return false;
-  }
-
-  return true;
-}
-
-/**
  * Parses an AuthenticationCleartextPassword message.
  * @see https://www.postgresql.org/docs/17/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONCLEARTEXTPASSWORD
  */
@@ -81,6 +48,19 @@ export function parseAuthenticationCleartextPassword(message: Uint8Array): void 
   const authType = view.getInt32(5);
   if (authType !== 3) {
     throw new Error(`Invalid authentication type: ${authType}`);
+  }
+}
+
+/**
+ * Checks if a message is an AuthenticationCleartextPassword message.
+ * @see https://www.postgresql.org/docs/17/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONCLEARTEXTPASSWORD
+ */
+export function isAuthenticationCleartextPassword(message: Uint8Array): boolean {
+  try {
+    parseAuthenticationCleartextPassword(message);
+    return true;
+  } catch (error) {
+    return false;
   }
 }
 
