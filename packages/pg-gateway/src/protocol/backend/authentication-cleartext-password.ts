@@ -1,3 +1,4 @@
+import { AuthenticationRequestType } from './authentication-request-type';
 import { MessageType } from './message-type';
 
 /**
@@ -16,7 +17,7 @@ export function createAuthenticationCleartextPassword(): Uint8Array {
   view.setUint32(1, messageLength);
 
   // Int32(3) - Specifies that cleartext password authentication is required
-  view.setUint32(5, 3);
+  view.setUint32(5, AuthenticationRequestType.CleartextPassword);
 
   return new Uint8Array(buffer);
 }
@@ -44,10 +45,10 @@ export function parseAuthenticationCleartextPassword(message: Uint8Array): void 
     throw new Error(`Invalid message length: ${length}`);
   }
 
-  // Check authentication type
-  const authType = view.getInt32(5);
-  if (authType !== 3) {
-    throw new Error(`Invalid authentication type: ${authType}`);
+  // Check authentication request type
+  const authenticationRequestType = view.getInt32(5);
+  if (authenticationRequestType !== AuthenticationRequestType.CleartextPassword) {
+    throw new Error(`Invalid authentication request type: ${authenticationRequestType}`);
   }
 }
 

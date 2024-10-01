@@ -1,3 +1,10 @@
+/**
+ * Message Types
+ *
+ * These are the backend (B) message types as defined in the PostgreSQL protocol.
+ *
+ * @see https://www.postgresql.org/docs/17/protocol-message-formats.html
+ */
 export const MessageType = {
   AuthenticationRequest: 'R',
   BackendKeyData: 'K',
