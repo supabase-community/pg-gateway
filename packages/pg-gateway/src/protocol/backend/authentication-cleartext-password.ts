@@ -11,7 +11,7 @@ export function createAuthenticationCleartextPassword(): Uint8Array {
   const view = new DataView(buffer);
 
   // Byte1('R') - Identifies the message as an authentication request
-  view.setUint8(0, MessageType.AuthenticationRequest.charCodeAt(0));
+  view.setUint8(0, MessageType.AuthenticationRequest);
 
   // Int32 - Length of message contents in bytes, including self
   view.setUint32(1, messageLength);
@@ -35,7 +35,7 @@ export function parseAuthenticationCleartextPassword(message: Uint8Array): void 
 
   // Check message type
   const messageType = view.getUint8(0);
-  if (messageType !== MessageType.AuthenticationRequest.charCodeAt(0)) {
+  if (messageType !== MessageType.AuthenticationRequest) {
     throw new Error(`Invalid message type: ${messageType}`);
   }
 
