@@ -1,5 +1,5 @@
 import { AuthenticationRequestType } from './authentication-request-type';
-import { MessageType } from './message-type';
+import { MessageType } from '../message-type';
 
 /**
  * Creates an AuthenticationCleartextPassword message.
@@ -26,7 +26,10 @@ export function createAuthenticationCleartextPassword(): Uint8Array {
  * Parses an AuthenticationCleartextPassword message.
  * @see https://www.postgresql.org/docs/17/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONCLEARTEXTPASSWORD
  */
-export function parseAuthenticationCleartextPassword(message: Uint8Array): void {
+export function parseAuthenticationCleartextPassword(message: Uint8Array): {
+  type: typeof MessageType.AuthenticationRequest;
+  authenticationRequestType: typeof AuthenticationRequestType.CleartextPassword;
+} {
   if (message.length !== 9) {
     throw new Error(`Invalid length: ${message.length}`);
   }
@@ -50,6 +53,11 @@ export function parseAuthenticationCleartextPassword(message: Uint8Array): void 
   if (authenticationRequestType !== AuthenticationRequestType.CleartextPassword) {
     throw new Error(`Invalid authentication request type: ${authenticationRequestType}`);
   }
+
+  return {
+    type: MessageType.AuthenticationRequest,
+    authenticationRequestType: AuthenticationRequestType.CleartextPassword,
+  };
 }
 
 /**
@@ -70,6 +78,10 @@ if (import.meta.vitest) {
   test('AuthenticationCleartextPassword', () => {
     const message = createAuthenticationCleartextPassword();
     expect(isAuthenticationCleartextPassword(message)).toBe(true);
-    expect(() => parseAuthenticationCleartextPassword(message)).not.toThrow();
+    const parsed = parseAuthenticationCleartextPassword(message);
+    expect(parsed).toEqual({
+      type: MessageType.AuthenticationRequest,
+      authenticationRequestType: AuthenticationRequestType.CleartextPassword,
+    });
   });
 }
