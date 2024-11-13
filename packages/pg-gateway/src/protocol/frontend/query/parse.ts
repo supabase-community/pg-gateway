@@ -12,6 +12,12 @@ export function createParse({
 }: {
   preparedStatement?: string;
   query?: string;
+  /**
+   * Array of parameter data types (OIDs).
+   * - Can be shorter than actual parameters in query (remaining params default to 0)
+   * - Can contain 0 to leave type unspecified
+   * - Can use ParameterType.Void for OUT parameters
+   */
   parameterTypes?: number[];
 }): Uint8Array {
   const encoder = new TextEncoder();
@@ -128,19 +134,36 @@ export function isParse(message: Uint8Array): boolean {
 
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest;
-  test('Parse', () => {
+
+  test('Parse with unspecified parameter types', () => {
     const message = createParse({
       preparedStatement: 'stmt1',
-      query: 'SELECT * FROM users WHERE id = $1',
-      parameterTypes: [ParameterType.Integer],
+      query: 'SELECT * FROM users WHERE id = $1 AND name = $2',
+      parameterTypes: [ParameterType.Integer], // Only specify first parameter
     });
-    expect(isParse(message)).toBe(true);
+
     const parsed = parseParse(message);
     expect(parsed).toEqual({
       type: MessageType.Parse,
       preparedStatement: 'stmt1',
-      query: 'SELECT * FROM users WHERE id = $1',
-      parameterTypes: [ParameterType.Integer],
+      query: 'SELECT * FROM users WHERE id = $1 AND name = $2',
+      parameterTypes: [ParameterType.Integer], // Second parameter type is unspecified
+    });
+  });
+
+  test('Parse with void parameter types for OUT parameters', () => {
+    const message = createParse({
+      preparedStatement: 'stmt2',
+      query: 'SELECT my_function($1, $2, $3)',
+      parameterTypes: [ParameterType.Integer, ParameterType.Text, ParameterType.Void],
+    });
+
+    const parsed = parseParse(message);
+    expect(parsed).toEqual({
+      type: MessageType.Parse,
+      preparedStatement: 'stmt2',
+      query: 'SELECT my_function($1, $2, $3)',
+      parameterTypes: [ParameterType.Integer, ParameterType.Text, ParameterType.Void],
     });
   });
 }
