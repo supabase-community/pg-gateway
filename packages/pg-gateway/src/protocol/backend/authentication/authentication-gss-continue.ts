@@ -70,12 +70,14 @@ export function parseAuthenticationGSSContinue(message: Uint8Array): {
  * @see https://www.postgresql.org/docs/17/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONGSSCONTINUE
  */
 export function isAuthenticationGSSContinue(message: Uint8Array): boolean {
-  try {
-    parseAuthenticationGSSContinue(message);
-    return true;
-  } catch (error) {
+  if (message.length < 9) {
     return false;
   }
+  const view = new DataView(message.buffer, message.byteOffset, message.byteLength);
+  return (
+    view.getUint8(0) === MessageType.AuthenticationRequest &&
+    view.getInt32(5) === AuthenticationRequestType.GSSContinue
+  );
 }
 
 if (import.meta.vitest) {

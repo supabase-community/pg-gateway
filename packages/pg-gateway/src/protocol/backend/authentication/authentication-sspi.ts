@@ -65,12 +65,14 @@ export function parseAuthenticationSSPI(message: Uint8Array): {
  * @see https://www.postgresql.org/docs/17/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-AUTHENTICATIONSSPI
  */
 export function isAuthenticationSSPI(message: Uint8Array): boolean {
-  try {
-    parseAuthenticationSSPI(message);
-    return true;
-  } catch (error) {
+  if (message.length < 9) {
     return false;
   }
+  const view = new DataView(message.buffer, message.byteOffset, message.byteLength);
+  return (
+    view.getUint8(0) === MessageType.AuthenticationRequest &&
+    view.getInt32(5) === AuthenticationRequestType.SSPI
+  );
 }
 
 if (import.meta.vitest) {

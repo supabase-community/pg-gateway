@@ -206,12 +206,7 @@ export function parseBind(message: Uint8Array): {
  * @see https://www.postgresql.org/docs/17/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-BIND
  */
 export function isBind(message: Uint8Array): boolean {
-  try {
-    parseBind(message);
-    return true;
-  } catch (error) {
-    return false;
-  }
+  return message[0] === MessageType.Bind;
 }
 
 if (import.meta.vitest) {
