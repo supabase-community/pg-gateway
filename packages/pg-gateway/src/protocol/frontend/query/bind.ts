@@ -211,7 +211,6 @@ export function isBind(message: Uint8Array): boolean {
 
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest;
-
   test('Bind', () => {
     const parameters = [new Uint8Array([1, 2, 3])];
     const formatCodes: (0 | 1)[] = [1];
