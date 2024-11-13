@@ -1,17 +1,5 @@
 import { MessageType } from '../message-type';
-
-/**
- * Type of object to describe
- * @see https://www.postgresql.org/docs/17/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-DESCRIBE
- */
-export const Variant = {
-  /** Describe a prepared statement */
-  PreparedStatement: 'S',
-  /** Describe a portal */
-  Portal: 'P',
-} as const;
-
-type VariantValue = (typeof Variant)[keyof typeof Variant];
+import { Variant, type VariantValue } from './variant-type';
 
 /**
  * Creates a Describe message.
@@ -111,7 +99,6 @@ export function isDescribe(message: Uint8Array): boolean {
 
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest;
-
   test('Describe', () => {
     const message = createDescribe({
       variant: Variant.PreparedStatement,
