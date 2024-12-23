@@ -3,3 +3,10 @@ dist/
 dbs/
 *.pem
 *.srl
+tsconfig.tsbuildinfo
+.env
+.DS_Store
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/

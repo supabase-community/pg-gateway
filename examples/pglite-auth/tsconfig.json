@@ -1,0 +1,4 @@
+{
+  "extends": "@total-typescript/tsconfig/tsc/no-dom/app",
+  "include": ["*.ts"]
+}

@@ -1,36 +1,66 @@
 {
   "name": "pg-gateway",
-  "version": "0.2.4",
+  "version": "0.3.0-beta.4",
   "description": "Postgres wire protocol for the server-side",
   "license": "MIT",
-  "main": "dist/index.js",
+  "type": "module",
+  "main": "dist/index.cjs",
   "types": "dist/index.d.ts",
-  "files": [
-    "dist/**/*"
-  ],
+  "files": ["dist/**/*"],
   "exports": {
     ".": {
-      "import": "./dist/index.mjs",
+      "import": "./dist/index.js",
       "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "default": "./dist/index.cjs"
+    },
+    "./node": {
+      "import": "./dist/platforms/node/index.js",
+      "types": "./dist/platforms/node/index.d.ts",
+      "default": "./dist/platforms/node/index.cjs"
+    },
+    "./deno": {
+      "import": "./dist/platforms/deno/index.js",
+      "types": "./dist/platforms/deno/index.d.ts",
+      "default": "./dist/platforms/deno/index.cjs"
+    },
+    "./web": {
+      "import": "./dist/platforms/web/index.js",
+      "types": "./dist/platforms/web/index.d.ts",
+      "default": "./dist/platforms/web/index.cjs"
     }
   },
   "sideEffects": false,
   "scripts": {
     "dev": "tsx examples/pglite/index.ts",
     "build": "tsup --clean",
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "prepublishOnly": "npm run build"
-  },
-  "dependencies": {
-    "pg-protocol": "^1.6.1"
+    "test": "vitest",
+    "test:deno": "deno test --allow-net --allow-read test/deno",
+    "prepublishOnly": "npm run build",
+    "format": "biome format --write .",
+    "lint": "biome lint --error-on-warnings .",
+    "type-check": "tsc --noEmit"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "npm:@gregnr/pglite@0.2.0-dev.8",
+    "@biomejs/biome": "^1.8.3",
+    "@electric-sql/pglite": "^0.2.7",
+    "@nodeweb/knex": "^3.1.0-alpha.13",
+    "@nodeweb/pg": "^8.12.0-alpha.5",
+    "@std/bytes": "npm:@jsr/std__bytes@^1.0.2",
+    "@std/crypto": "npm:@jsr/std__crypto@^1.0.3",
+    "@std/encoding": "npm:@jsr/std__encoding@^1.0.3",
+    "@total-typescript/tsconfig": "^1.0.4",
     "@types/node": "^20.14.11",
+    "@types/pg": "^8.11.8",
+    "@vitest/browser": "^2.0.5",
+    "asn1js": "^3.0.5",
     "pg": "^8.12.0",
+    "pg-protocol": "^1.6.1",
+    "pkijs": "^3.2.4",
+    "playwright": "^1.47.0",
+    "postgres": "^3.4.4",
     "tsup": "^8.2.3",
     "tsx": "^4.16.2",
-    "typescript": "^5.5.3"
+    "typescript": "^5.5.3",
+    "vitest": "^2.0.5"
   }
 }

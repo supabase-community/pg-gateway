@@ -1,11 +1,8 @@
-import { PGlite, PGliteInterface } from '@electric-sql/pglite';
+import { PGlite, type PGliteInterface } from '@electric-sql/pglite';
 import { mkdir, readFile } from 'node:fs/promises';
-import net from 'node:net';
-import {
-  PostgresConnection,
-  TlsOptionsCallback,
-  hashMd5Password,
-} from 'pg-gateway';
+import { createServer } from 'node:net';
+import { type TlsOptionsCallback, createPreHashedPassword } from 'pg-gateway';
+import { fromNodeSocket } from 'pg-gateway/node';
 
 const tls: TlsOptionsCallback = async ({ sniServerName }) => {
   // Optionally serve different certs based on `sniServerName`
@@ -24,44 +21,35 @@ function getIdFromServerName(serverName: string) {
   return id;
 }
 
-const server = net.createServer((socket) => {
+const server = createServer(async (socket) => {
   let db: PGliteInterface;
 
-  const connection = new PostgresConnection(socket, {
+  const connection = await fromNodeSocket(socket, {
     serverVersion: '16.3 (PGlite 0.2.0)',
-    authMode: 'md5Password',
-    tls,
-    async validateCredentials(credentials) {
-      if (credentials.authMode === 'md5Password') {
-        const { hash, salt } = credentials;
-        const expectedHash = await hashMd5Password(
-          'postgres',
-          'postgres',
-          salt
-        );
-        return hash === expectedHash;
-      }
-      return false;
+    auth: {
+      method: 'md5',
+      getPreHashedPassword: async ({ username }) => {
+        return createPreHashedPassword(username, 'postgres');
+      },
     },
+    tls,
     async onTlsUpgrade({ tlsInfo }) {
       if (!tlsInfo) {
         connection.sendError({
           severity: 'FATAL',
           code: '08000',
-          message: `ssl connection required`,
+          message: 'ssl connection required',
         });
-        connection.socket.end();
-        return;
+        throw new Error('end socket');
       }
 
       if (!tlsInfo.sniServerName) {
         connection.sendError({
           severity: 'FATAL',
           code: '08000',
-          message: `ssl sni extension required`,
+          message: 'ssl sni extension required',
         });
-        connection.socket.end();
-        return;
+        throw new Error('end socket');
       }
 
       const databaseId = getIdFromServerName(tlsInfo.sniServerName);
@@ -71,23 +59,15 @@ const server = net.createServer((socket) => {
     async onStartup() {
       // Wait for PGlite to be ready before further processing
       await db.waitReady;
-      return false;
     },
     async onMessage(data, { isAuthenticated }) {
       // Only forward messages to PGlite after authentication
       if (!isAuthenticated) {
-        return false;
+        return;
       }
 
-      // Forward raw message to PGlite
-      try {
-        const [[_, responseData]] = await db.execProtocol(data);
-        connection.sendData(responseData);
-      } catch (err) {
-        connection.sendError(err);
-        connection.sendReadyForQuery();
-      }
-      return true;
+      // Forward raw message to PGlite and send response to client
+      return await db.execProtocolRaw(data);
     },
   });
 
