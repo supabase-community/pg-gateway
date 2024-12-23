@@ -32,7 +32,7 @@ export class Md5AuthFlow extends BaseAuthFlow {
   };
   private username: string;
   private salt: Uint8Array;
-  private completed = false;
+  private completed: boolean;
 
   constructor(params: {
     auth: Md5AuthOptions;
@@ -42,6 +42,8 @@ export class Md5AuthFlow extends BaseAuthFlow {
     connectionState: ConnectionState;
   }) {
     super(params);
+
+    this.completed = false;
     this.auth = {
       ...params.auth,
       validateCredentials:
