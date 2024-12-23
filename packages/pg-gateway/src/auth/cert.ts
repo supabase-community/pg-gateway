@@ -21,7 +21,7 @@ export class CertAuthFlow extends BaseAuthFlow {
     validateCredentials: NonNullable<CertAuthOptions['validateCredentials']>;
   };
   private username: string;
-  private completed = false;
+  private completed: boolean;
 
   constructor(params: {
     auth: CertAuthOptions;
@@ -32,6 +32,7 @@ export class CertAuthFlow extends BaseAuthFlow {
   }) {
     super(params);
 
+    this.completed = false;
     this.auth = {
       ...params.auth,
       validateCredentials:

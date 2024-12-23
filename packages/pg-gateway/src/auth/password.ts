@@ -31,7 +31,7 @@ export class PasswordAuthFlow extends BaseAuthFlow {
     validateCredentials: NonNullable<PasswordAuthOptions['validateCredentials']>;
   };
   private username: string;
-  private completed = false;
+  private completed: boolean;
 
   constructor(params: {
     auth: PasswordAuthOptions;
@@ -41,6 +41,8 @@ export class PasswordAuthFlow extends BaseAuthFlow {
     connectionState: ConnectionState;
   }) {
     super(params);
+
+    this.completed = false;
     this.auth = {
       ...params.auth,
       validateCredentials:

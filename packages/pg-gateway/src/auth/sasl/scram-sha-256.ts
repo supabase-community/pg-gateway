@@ -102,7 +102,7 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
   clientFirstMessageBare?: string;
   serverFirstMessage?: string;
   serverNonce?: string;
-  step: ScramSha256Step = ScramSha256Step.Initial;
+  step: ScramSha256Step;
   reader: BufferReader;
   scramSha256Data?: ScramSha256Data;
   connectionState: ConnectionState;
@@ -115,6 +115,8 @@ export class ScramSha256AuthFlow extends SaslMechanism implements AuthFlow {
     connectionState: ConnectionState;
   }) {
     super({ writer: params.writer });
+
+    this.step = ScramSha256Step.Initial;
     this.username = params.username;
     this.auth = {
       ...params.auth,
